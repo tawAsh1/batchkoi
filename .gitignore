@@ -1,0 +1,12 @@
+# build output
+/batchkoi
+/dist/
+
+# go
+*.test
+*.out
+coverage.*
+
+# local
+.env
+.DS_Store
