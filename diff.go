@@ -1,11 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
@@ -38,9 +38,7 @@ func (c *DiffCmd) Run(app *App) error {
 
 	fromLabel := name + " (remote)"
 	remoteJSON := ""
-	if remote == nil {
-		fmt.Fprintf(os.Stderr, "# %s is not registered yet — showing the full definition as new\n", name)
-	} else {
+	if remote != nil {
 		fromLabel = fmt.Sprintf("%s:%d (remote)", name, aws.ToInt32(remote.Revision))
 		remoteInput, err := remoteToInput(remote)
 		if err != nil {
@@ -51,39 +49,41 @@ func (c *DiffCmd) Run(app *App) error {
 		}
 	}
 
-	if remoteJSON == localJSON {
-		return nil // no differences
+	changed := remoteJSON != localJSON
+	unified := ""
+	if changed {
+		edits := myers.ComputeEdits(span.URIFromPath(fromLabel), remoteJSON, localJSON)
+		unified = fmt.Sprint(gotextdiff.ToUnified(fromLabel, name+" (local)", remoteJSON, edits))
 	}
 
-	edits := myers.ComputeEdits(span.URIFromPath(fromLabel), remoteJSON, localJSON)
-	fmt.Fprint(os.Stdout, gotextdiff.ToUnified(fromLabel, name+" (local)", remoteJSON, edits))
+	if app.cli.Output == "json" {
+		b, err := json.MarshalIndent(map[string]any{
+			"jobDefinitionName": name,
+			"changed":           changed,
+			"diff":              unified,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, string(b))
+		return nil
+	}
+
+	if remote == nil {
+		fmt.Fprintf(os.Stderr, "# %s is not registered yet — showing the full definition as new\n", name)
+	}
+	fmt.Fprint(os.Stdout, unified)
 	return nil
 }
 
-// latestJobDefinition returns the highest ACTIVE revision for name, or nil if
-// none are registered.
+// latestJobDefinition returns the highest ACTIVE revision for name, or nil.
 func (app *App) latestJobDefinition(name string) (*types.JobDefinition, error) {
-	var latest *types.JobDefinition
-	var token *string
-	for {
-		out, err := app.batch.DescribeJobDefinitions(app.ctx, &batch.DescribeJobDefinitionsInput{
-			JobDefinitionName: aws.String(name),
-			Status:            aws.String("ACTIVE"),
-			NextToken:         token,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("DescribeJobDefinitions: %w", err)
-		}
-		for i := range out.JobDefinitions {
-			jd := out.JobDefinitions[i]
-			if latest == nil || aws.ToInt32(jd.Revision) > aws.ToInt32(latest.Revision) {
-				latest = &jd
-			}
-		}
-		if aws.ToString(out.NextToken) == "" {
-			break
-		}
-		token = out.NextToken
+	revs, err := app.listActiveRevisions(name)
+	if err != nil {
+		return nil, err
 	}
-	return latest, nil
+	if len(revs) == 0 {
+		return nil, nil
+	}
+	return &revs[0], nil
 }

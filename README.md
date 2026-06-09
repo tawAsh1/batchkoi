@@ -7,9 +7,9 @@
 your **Batch job definitions as code** — render, diff, register, deploy, and run them straight
 from a Jsonnet/JSON file that mirrors the AWS API.
 
-> ⚠️ **Status: early WIP (v0).** `render` and the templating layer (env / tfstate) work today;
-> `diff` / `register` / `run` are landing next. Scope is intentionally **job definitions only**
-> for now (see Design).
+> ⚠️ **Status: early WIP (v0).** `render`, `diff`, `register`, `deploy`, and `deregister` are
+> implemented (the AWS round-trip is not yet battle-tested); `run` / `verify` / `status` / `init`
+> are next. Scope is intentionally **job definitions only** (see Design).
 
 ## Why
 
@@ -28,10 +28,13 @@ go install github.com/tawAsh1/batchkoi@latest
 ## Quickstart
 
 ```sh
-batchkoi render     # render the job definition to JSON
-batchkoi diff       # vs. the latest registered revision   (WIP)
-batchkoi register   # register a new revision              (WIP)
-batchkoi run        # submit a job + tail logs             (WIP)
+batchkoi render                 # render the job definition to JSON
+batchkoi diff                   # diff vs. the latest registered revision
+batchkoi register               # register a new revision
+batchkoi deploy                 # register only if changed, then prune old revisions
+batchkoi deploy --keep-count 5  # ...keeping only the 5 newest active revisions
+batchkoi deploy -o json         # machine-readable output
+batchkoi run                    # submit a job + tail logs                 (WIP)
 ```
 
 By default batchkoi reads `batchkoi.yml` in the current directory (override with `-c`).
@@ -81,18 +84,35 @@ local tfstate = std.native('tfstate');
 See [`_example/`](_example/) for a complete runnable example:
 `batchkoi -c _example/batchkoi.yml render`.
 
+## Deploy & retention
+
+`deploy` registers a new revision **only when the rendered definition differs** from the latest
+one (otherwise it's a no-op), then optionally prunes old revisions:
+
+```sh
+batchkoi deploy --keep-count 5                       # keep the 5 newest ACTIVE revisions
+batchkoi deploy --keep-count 5 --keep-revision 3,7   # ...but never deregister 3 or 7
+batchkoi deregister --keep-count 3                   # prune only, without registering
+```
+
+- `--keep-count N` — keep the N most recent ACTIVE revisions (the just-registered one counts).
+- `--keep-revision N` — revision(s) to always protect (repeatable / comma-separated).
+- Without these flags nothing is ever deregistered (safe by default).
+
+Add `-o json` / `--output json` to any command for machine-readable output (CI-friendly).
+
 ## Commands
 
 | command | what it does | status |
 |---|---|---|
 | `render` | evaluate the config and print JSON | ✅ |
-| `diff` | diff local config vs. latest registered revision | 🚧 |
-| `register` | register a new job definition revision | 🚧 |
-| `deploy` | register + deregister stale revisions | 🚧 |
+| `diff` | diff local config vs. latest registered revision | ✅ |
+| `register` | register a new job definition revision | ✅ |
+| `deploy` | register (only if changed) + prune old revisions | ✅ |
+| `deregister` | deregister old revisions per keep policy | ✅ |
 | `run` | submit a job and tail its CloudWatch logs | 🚧 |
 | `verify` | check image / IAM roles / log group | 🚧 |
 | `status` | list registered revisions | 🚧 |
-| `deregister` | deregister old revisions | 🚧 |
 | `init` | generate config from an existing job definition | 🚧 |
 
 ## Design
