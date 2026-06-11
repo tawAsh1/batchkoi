@@ -19,6 +19,18 @@ go install github.com/tawAsh1/batchkoi@latest
 
 [Releases](https://github.com/tawAsh1/batchkoi/releases) にビルド済みバイナリもあります。
 
+GitHub Actions では同梱の setup action でインストールできます。デフォルトで Sigstore の
+ビルド来歴（attestation）を検証します。タグは付け替え可能で、アセットの隣にある checksum は
+攻撃者も差し替えられるため、信頼の根拠になるのは attestation だけです（2026 年の trivy の
+インシデントが実例）。
+
+```yaml
+- uses: tawAsh1/batchkoi@<commit-sha>   # action はタグでなく commit SHA で固定
+  with:
+    version: v0.1.0                     # バイナリのバージョンも固定推奨
+- run: batchkoi deploy --ext-str IMAGE_TAG=${{ github.sha }}
+```
+
 ## 使い方
 
 ```sh

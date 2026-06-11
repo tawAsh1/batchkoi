@@ -22,6 +22,20 @@ go install github.com/tawAsh1/batchkoi@latest
 
 or grab a binary from [Releases](https://github.com/tawAsh1/batchkoi/releases).
 
+In GitHub Actions, the bundled setup action installs a release binary and verifies its
+Sigstore build provenance by default (tags are mutable — a checksum next to the asset is not a
+trust anchor, as the 2026 trivy incident showed; the attestation is):
+
+```yaml
+- uses: tawAsh1/batchkoi@<commit-sha>   # pin actions by commit SHA, not tag
+  with:
+    version: v0.1.0                     # pin the binary version too
+- run: batchkoi deploy --ext-str IMAGE_TAG=${{ github.sha }}
+```
+
+Verify a manually downloaded archive the same way:
+`gh attestation verify batchkoi_*.tar.gz --repo tawAsh1/batchkoi`.
+
 ## Quickstart
 
 ```sh

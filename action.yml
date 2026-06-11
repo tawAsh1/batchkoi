@@ -1,0 +1,91 @@
+name: "Setup batchkoi"
+description: "Install batchkoi 🎣 — a minimal deployment tool for AWS Batch job definitions"
+author: "tawAsh1"
+branding:
+  icon: "package"
+  color: "orange"
+
+inputs:
+  version:
+    description: 'batchkoi version to install, e.g. "v0.1.0" (recommended) or "latest"'
+    required: false
+    default: "latest"
+  verify-attestation:
+    description: >-
+      Verify the archive's Sigstore build provenance with `gh attestation
+      verify` before installing (proves it was built by this repository's
+      release workflow — a checksum alone can be replaced together with the
+      asset). Set "false" only where gh is unavailable.
+    required: false
+    default: "true"
+  github-token:
+    description: "Token for gh attestation verify (no extra scopes needed)."
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install batchkoi
+      shell: bash
+      # inputs.* goes through env, never interpolated into the script
+      # (script-injection hardening). The GITHUB_PATH write below is the
+      # point of a setup action; the dir is under RUNNER_TEMP and populated
+      # only by this step.
+      env:
+        BATCHKOI_VERSION: ${{ inputs.version }}
+        BATCHKOI_VERIFY: ${{ inputs.verify-attestation }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO_SLUG: tawAsh1/batchkoi
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+
+        case "${RUNNER_OS}" in
+          Linux)  os=linux ;;
+          macOS)  os=darwin ;;
+          *) echo "::error::unsupported OS: ${RUNNER_OS} (linux/macos only — download a release archive manually)"; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64)          arch=amd64 ;;
+          aarch64 | arm64) arch=arm64 ;;
+          *) echo "::error::unsupported architecture: $(uname -m)"; exit 1 ;;
+        esac
+
+        version="${BATCHKOI_VERSION}"
+        if [ "${version}" = "latest" ]; then
+          version=$(curl -fsSL --retry 3 "https://api.github.com/repos/${GH_REPO_SLUG}/releases/latest" | jq -r .tag_name)
+        fi
+
+        archive="batchkoi_${version#v}_${os}_${arch}.tar.gz"
+        base="https://github.com/${GH_REPO_SLUG}/releases/download/${version}"
+        dir="${RUNNER_TEMP}/batchkoi-${version}"
+        mkdir -p "${dir}"
+        cd "${dir}"
+
+        echo "downloading ${archive} (${version})"
+        curl -fsSL --retry 3 -O "${base}/${archive}"
+        curl -fsSL --retry 3 -O "${base}/checksums.txt"
+
+        # Integrity: checksum first (cheap), then Sigstore provenance.
+        # The checksum catches corruption, but lives next to the asset — an
+        # attacker who swaps the archive swaps checksums.txt too (see the
+        # 2026 trivy tag-repointing incident). The attestation is the real
+        # trust anchor: it is signed via GitHub OIDC and proves the archive
+        # was built by this repo's release workflow, which a replaced asset
+        # cannot fake. Fails closed; opt out with verify-attestation: "false".
+        grep " ${archive}\$" checksums.txt | shasum -a 256 -c -
+
+        if [ "${BATCHKOI_VERIFY}" = "true" ]; then
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "::error::gh CLI not found — attestation verification is on by default; install gh or set verify-attestation: \"false\""
+            exit 1
+          fi
+          gh attestation verify "${archive}" --repo "${GH_REPO_SLUG}"
+        else
+          echo "::warning::attestation verification disabled (verify-attestation: false)"
+        fi
+
+        tar -xzf "${archive}" batchkoi
+        chmod +x batchkoi
+        echo "${dir}" >> "${GITHUB_PATH}"
+        echo "installed batchkoi ${version} to ${dir}"
