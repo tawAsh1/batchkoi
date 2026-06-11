@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 )
 
 type RenderCmd struct{}
@@ -21,9 +20,9 @@ func (c *RenderCmd) Run(app *App) error {
 	if err := json.Indent(&buf, src, "", "  "); err != nil {
 		// Not valid JSON — print the raw output so the user can see what
 		// went wrong, but fail so CI catches it.
-		fmt.Fprintln(os.Stdout, string(src))
+		fmt.Fprintln(app.out(), string(src))
 		return fmt.Errorf("rendered %s is not valid JSON: %w", app.config.JobDefinition, err)
 	}
-	fmt.Fprintln(os.Stdout, buf.String())
+	fmt.Fprintln(app.out(), buf.String())
 	return nil
 }

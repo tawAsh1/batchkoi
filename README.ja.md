@@ -58,6 +58,10 @@ plugins:
     config: { path: terraform.tfstate }
 ```
 
+`batchkoi.yml` 自体も Go テンプレートとして描画されます（ecspresso 互換）。
+`{{ env "NAME" "default" }}` / `{{ must_env "NAME" }}` が使えるので、たとえば
+`job_queue: '{{ env "JOB_QUEUE" "default-q" }}'` のように環境変数から値を渡せます。
+
 ```jsonnet
 // jobdef.jsonnet — RegisterJobDefinition のリクエストをそのまま書く
 local env = std.native('env');
@@ -110,7 +114,7 @@ local repo = '123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp';
 | `revisions` | リビジョン一覧。ステータス・イメージ・タグ・latest 表示（`--active`） |
 | `rollback` | 最新 ACTIVE リビジョンを deregister して一つ前を latest に戻す（`--dry-run`） |
 | `deregister` | 登録せずにリビジョン整理だけ行う |
-| `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--array N` / `--no-wait`） |
+| `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--array N` / `--no-wait` / `--dry-run`） |
 | `logs` | 既存ジョブのログを job id で表示（array の子は `<job-id>:<index>`、`--follow` で追跡） |
 | `list` | リージョン内のジョブ定義を 1 行ずつ一覧（`--all`、設定ファイルなしでも動作） |
 

@@ -14,12 +14,18 @@ type result interface {
 	String() string
 }
 
+// out returns the writer command results go to: os.Stdout, unless a test
+// injected a buffer.
+func (app *App) out() io.Writer {
+	if app.stdout != nil {
+		return app.stdout
+	}
+	return os.Stdout
+}
+
 // emit prints r as indented JSON when --output json, otherwise as text.
 func (app *App) emit(r result) error {
-	w := io.Writer(os.Stdout)
-	if app.stdout != nil {
-		w = app.stdout
-	}
+	w := app.out()
 	if app.cli.Output == "json" {
 		b, err := json.MarshalIndent(r, "", "  ")
 		if err != nil {

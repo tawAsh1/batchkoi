@@ -59,12 +59,12 @@ func (c *DiffCmd) Run(app *App) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stdout, string(b))
+		fmt.Fprintln(app.out(), string(b))
 	} else {
 		if remote == nil {
 			fmt.Fprintf(os.Stderr, "# %s is not registered yet — showing the full definition as new\n", name)
 		}
-		fmt.Fprint(os.Stdout, unified)
+		fmt.Fprint(app.out(), unified)
 	}
 
 	// 2 distinguishes "has differences" from runtime errors (exit 1) — the

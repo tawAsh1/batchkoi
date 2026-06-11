@@ -63,6 +63,10 @@ plugins:
     config: { path: terraform.tfstate }
 ```
 
+`batchkoi.yml` itself is rendered as a Go template with `{{ env "NAME" "default" }}` and
+`{{ must_env "NAME" }}` (ecspresso-compatible), so e.g. `job_queue: '{{ env "JOB_QUEUE" "default-q" }}'`
+resolves from the environment before the YAML is parsed.
+
 ```jsonnet
 // jobdef.jsonnet — the AWS Batch RegisterJobDefinition request shape, 1:1
 local env = std.native('env');
@@ -115,7 +119,7 @@ See [_example/](_example/) for a runnable example (no AWS account needed to rend
 | `revisions` | list revisions: status, image, tags, latest marker (`--active`) |
 | `rollback` | deregister the latest ACTIVE revision so the previous one is latest again (`--dry-run`) |
 | `deregister` | prune old revisions without registering |
-| `run` | submit a job and tail logs; registers first only if changed (`--rev`, `--command`, `--env`, `--array N`, `--no-wait`) |
+| `run` | submit a job and tail logs; registers first only if changed (`--rev`, `--command`, `--env`, `--array N`, `--no-wait`, `--dry-run`) |
 | `logs` | print the CloudWatch logs of an existing job by id (`<job-id>` or `<job-id>:<index>` for an array child; `--follow`) |
 | `list` | one row per job definition in the region: revisions, latest, image (`--all`; works without a config file) |
 

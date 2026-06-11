@@ -115,7 +115,9 @@ func (c *DeployCmd) Run(app *App) error {
 // counting the would-be new revision, exactly as the real deploy would.
 func (c *DeployCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, res *DeployResult) error {
 	// Fetch INACTIVE revisions too: Batch never reuses revision numbers, so
-	// the next revision is max(all)+1, not max(ACTIVE)+1.
+	// the next revision is max(all)+1, not max(ACTIVE)+1. This is a
+	// point-in-time prediction — a register racing from elsewhere shifts the
+	// number, but the real deploy always uses whatever AWS assigns.
 	all, err := app.listRevisions(res.JobDefinitionName, "")
 	if err != nil {
 		return err

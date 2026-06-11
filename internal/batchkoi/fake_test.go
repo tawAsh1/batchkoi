@@ -26,6 +26,7 @@ type fakeBatch struct {
 	registered   []*batch.RegisterJobDefinitionInput
 	deregistered []string // ARNs
 	submitted    []*batch.SubmitJobInput
+	pageSize     int // >0: DescribeJobDefinitions paginates with NextToken
 }
 
 func (f *fakeBatch) DescribeJobDefinitions(_ context.Context, in *batch.DescribeJobDefinitionsInput, _ ...func(*batch.Options)) (*batch.DescribeJobDefinitionsOutput, error) {
@@ -48,6 +49,18 @@ func (f *fakeBatch) DescribeJobDefinitions(_ context.Context, in *batch.Describe
 			}
 			out = append(out, jd)
 		}
+	}
+	if f.pageSize > 0 {
+		start := 0
+		if t := aws.ToString(in.NextToken); t != "" {
+			start, _ = strconv.Atoi(t)
+		}
+		end := min(start+f.pageSize, len(out))
+		resp := &batch.DescribeJobDefinitionsOutput{JobDefinitions: out[start:end]}
+		if end < len(out) {
+			resp.NextToken = aws.String(strconv.Itoa(end))
+		}
+		return resp, nil
 	}
 	return &batch.DescribeJobDefinitionsOutput{JobDefinitions: out}, nil
 }

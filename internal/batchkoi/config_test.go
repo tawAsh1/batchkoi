@@ -7,6 +7,59 @@ import (
 	"testing"
 )
 
+func TestLoadConfigEnvExpansion(t *testing.T) {
+	writeConfig := func(t *testing.T, content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "batchkoi.yml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("env set", func(t *testing.T) {
+		t.Setenv("BK_TEST_QUEUE", "env-q")
+		path := writeConfig(t, "job_definition: jobdef.json\njob_queue: '{{ env \"BK_TEST_QUEUE\" \"fallback-q\" }}'\n")
+		c, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.JobQueue != "env-q" {
+			t.Errorf("JobQueue = %q, want env-q", c.JobQueue)
+		}
+	})
+	t.Run("env unset falls back to default", func(t *testing.T) {
+		t.Setenv("BK_TEST_QUEUE", "") // register cleanup, then unset for real
+		os.Unsetenv("BK_TEST_QUEUE")
+		path := writeConfig(t, "job_definition: jobdef.json\njob_queue: '{{ env \"BK_TEST_QUEUE\" \"fallback-q\" }}'\n")
+		c, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.JobQueue != "fallback-q" {
+			t.Errorf("JobQueue = %q, want fallback-q", c.JobQueue)
+		}
+	})
+	t.Run("must_env unset errors", func(t *testing.T) {
+		t.Setenv("BK_TEST_QUEUE", "")
+		os.Unsetenv("BK_TEST_QUEUE")
+		path := writeConfig(t, "job_definition: jobdef.json\njob_queue: '{{ must_env \"BK_TEST_QUEUE\" }}'\n")
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "must_env") {
+			t.Errorf("want must_env error, got %v", err)
+		}
+	})
+	t.Run("no template passes through", func(t *testing.T) {
+		path := writeConfig(t, "job_definition: jobdef.json\njob_queue: plain-q\n")
+		c, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.JobQueue != "plain-q" {
+			t.Errorf("JobQueue = %q, want plain-q", c.JobQueue)
+		}
+	})
+}
+
 func TestCheckRequiredVersion(t *testing.T) {
 	cases := []struct {
 		name       string
