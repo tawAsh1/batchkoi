@@ -53,7 +53,14 @@ runs:
 
         version="${BATCHKOI_VERSION}"
         if [ "${version}" = "latest" ]; then
-          version=$(curl -fsSL --retry 3 "https://api.github.com/repos/${GH_REPO_SLUG}/releases/latest" | jq -r .tag_name)
+          # Authenticated when possible: anonymous api.github.com calls from
+          # shared runner IPs are routinely rate-limited (403).
+          api="https://api.github.com/repos/${GH_REPO_SLUG}/releases/latest"
+          if [ -n "${GH_TOKEN:-}" ]; then
+            version=$(curl -fsSL --retry 3 -H "Authorization: Bearer ${GH_TOKEN}" "${api}" | jq -r .tag_name)
+          else
+            version=$(curl -fsSL --retry 3 "${api}" | jq -r .tag_name)
+          fi
         fi
 
         archive="batchkoi_${version#v}_${os}_${arch}.tar.gz"
