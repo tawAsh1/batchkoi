@@ -1,6 +1,7 @@
 package batchkoi
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/batch"
@@ -47,5 +48,44 @@ func TestContainerOverrides(t *testing.T) {
 
 	if ov := containerOverrides(nil, map[string]string{"A": "1"}); ov == nil || len(ov.Command) != 0 {
 		t.Errorf("env-only override: got %+v", ov)
+	}
+}
+
+func TestArrayProgress(t *testing.T) {
+	cases := []struct {
+		name    string
+		size    int32
+		summary map[string]int32
+		want    string
+	}{
+		{"empty summary", 10, nil, "▱▱▱▱▱▱▱▱▱▱ 0/10 done"},
+		{"running", 10, map[string]int32{"RUNNING": 4, "SUCCEEDED": 3}, "▰▰▰▱▱▱▱▱▱▱ 3/10 done, 4 running"},
+		{"with failures", 4, map[string]int32{"SUCCEEDED": 2, "FAILED": 2}, "▰▰▰▰▰▰▰▰▰▰ 4/4 done (2 failed)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := arrayProgress(tc.size, tc.summary, false); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChildPrefix(t *testing.T) {
+	if got := childPrefix(3, 2, false); got != " 3 | " {
+		t.Errorf("plain: got %q, want %q", got, " 3 | ")
+	}
+	got := childPrefix(0, 1, true)
+	if !strings.HasPrefix(got, "\x1b[36m") || !strings.HasSuffix(got, "\x1b[0m") {
+		t.Errorf("colored: got %q, want cyan-wrapped prefix", got)
+	}
+	if !strings.Contains(got, "0 | ") {
+		t.Errorf("colored: got %q, want it to contain %q", got, "0 | ")
+	}
+}
+
+func TestColorEnabledNonTerminal(t *testing.T) {
+	if colorEnabled(&strings.Builder{}) {
+		t.Error("non-file writer must not enable color")
 	}
 }

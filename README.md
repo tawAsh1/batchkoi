@@ -87,6 +87,10 @@ Native functions: `env(name, default)`, `must_env(name)`, `caller_identity()` (a
 from `--ext-str KEY=VALUE` / `--ext-code` (`std.extVar`). `--envfile .env` exports env files
 before rendering, and every flag falls back to a `BATCHKOI_*` environment variable.
 
+A `.json` job definition is read verbatim — no Jsonnet evaluation, so native functions and
+`--ext-str` / `--ext-code` have no effect there. Use `.jsonnet` when you need them (JSON is
+valid Jsonnet, so renaming the file is enough).
+
 See [_example/](_example/) for a runnable example (no AWS account needed to render).
 
 ## Commands
@@ -102,13 +106,18 @@ See [_example/](_example/) for a runnable example (no AWS account needed to rend
 | `revisions` | list revisions: status, image, tags, latest marker (`--active`) |
 | `rollback` | deregister the latest ACTIVE revision so the previous one is latest again (`--dry-run`) |
 | `deregister` | prune old revisions without registering |
-| `run` | submit a job and tail logs; registers first only if changed (`--rev`, `--command`, `--env`, `--no-wait`) |
+| `run` | submit a job and tail logs; registers first only if changed (`--rev`, `--command`, `--env`, `--array N`, `--no-wait`) |
 
 Notes:
 
-- Nothing is ever deregistered unless you pass `--keep-count` / `--keep-revision`, and
-  `deploy --dry-run` shows exactly which revisions would go.
+- Nothing is ever deregistered unless you pass `--keep-count` (`--keep-revision` protects
+  specific revisions from that pruning), and `deploy --dry-run` shows exactly which revisions
+  would go.
 - `run` exits non-zero when the job fails. `-o json` on any command gives machine-readable output.
+- `run --array N` submits an array job and tails every child's logs, interleaved behind a
+  colored per-child prefix (docker-compose style) with a progress bar as children finish.
+  Tailing is capped at 32 children (CloudWatch API quotas) — larger arrays show progress only.
+  Multi-node jobs are submitted fine but not tailed.
 - Rollback is just a deregister: jobs submitted by bare name resolve to the highest ACTIVE
   revision, so removing the latest makes the previous one current.
 

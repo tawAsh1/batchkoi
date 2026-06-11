@@ -82,6 +82,10 @@ local tfstate = std.native('tfstate');
 `std.extVar` に値を渡せます。`--envfile .env` で環境変数ファイルを読み込み、すべてのフラグは
 `BATCHKOI_*` 環境変数でも指定できます。
 
+`.json` のジョブ定義はそのまま読み込まれます — Jsonnet 評価を通らないため、ネイティブ関数や
+`--ext-str` / `--ext-code` は効きません。必要なら `.jsonnet` を使ってください（JSON は
+そのまま valid な Jsonnet なので、リネームするだけで動きます）。
+
 動かせるサンプルは [_example/](_example/) にあります（render だけなら AWS アカウント不要）。
 
 ## コマンド
@@ -97,11 +101,15 @@ local tfstate = std.native('tfstate');
 | `revisions` | リビジョン一覧。ステータス・イメージ・タグ・latest 表示（`--active`） |
 | `rollback` | 最新 ACTIVE リビジョンを deregister して一つ前を latest に戻す（`--dry-run`） |
 | `deregister` | 登録せずにリビジョン整理だけ行う |
-| `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--no-wait`） |
+| `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--array N` / `--no-wait`） |
 
-`--keep-count` / `--keep-revision` を渡さない限り deregister は一切起きません。
-削除対象は `deploy --dry-run` で事前に確認できます。`run` はジョブ失敗時に非ゼロで終了し、
-どのコマンドも `-o json` で機械可読な出力になります。
+`--keep-count` を渡さない限り deregister は一切起きません（`--keep-revision` は
+その整理から特定リビジョンを守るためのものです）。削除対象は `deploy --dry-run` で
+事前に確認できます。`run` はジョブ失敗時に非ゼロで終了し、どのコマンドも `-o json` で
+機械可読な出力になります。`run --array N` は array ジョブとして投入し、全子ジョブのログを
+docker-compose 風の色付き prefix で interleave 表示、進捗バーで完了状況も追えます
+（CloudWatch の API クォータの都合で tail は 32 子まで。それ以上は進捗表示のみ）。
+マルチノードジョブは投入はできますがログは追いません。
 
 ## 設計
 
