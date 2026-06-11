@@ -25,8 +25,8 @@ type App struct {
 
 // NewApp constructs the app. Config and AWS clients are loaded lazily via setup()
 // so that commands like version/help work without a config file or credentials.
-func NewApp(ctx context.Context, cli *CLI) (*App, error) {
-	return &App{ctx: ctx, cli: cli}, nil
+func NewApp(ctx context.Context, cli *CLI) *App {
+	return &App{ctx: ctx, cli: cli}
 }
 
 // setup loads batchkoi.yml and wires up the AWS clients. It is idempotent.

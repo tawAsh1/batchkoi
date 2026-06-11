@@ -8,8 +8,8 @@ import (
 )
 
 type DeregisterCmd struct {
-	KeepCount    int   `name:"keep-count" help:"Keep only the N most recent ACTIVE revisions; deregister older ones."`
-	KeepRevision []int `name:"keep-revision" help:"Revision number(s) to always keep (repeatable / comma-separated)."`
+	KeepCount    int   `name:"keep-count" required:"" help:"Keep only the N most recent ACTIVE revisions; deregister older ones."`
+	KeepRevision []int `name:"keep-revision" help:"Revision number(s) to protect from --keep-count pruning (repeatable / comma-separated)."`
 }
 
 // DeregisterResult is the outcome of a deregister.
@@ -31,6 +31,9 @@ func (r DeregisterResult) String() string {
 }
 
 func (c *DeregisterCmd) Run(app *App) error {
+	if c.KeepCount <= 0 {
+		return fmt.Errorf("--keep-count must be positive")
+	}
 	if err := app.setup(); err != nil {
 		return err
 	}
@@ -41,9 +44,6 @@ func (c *DeregisterCmd) Run(app *App) error {
 	name := aws.ToString(local.JobDefinitionName)
 	if name == "" {
 		return fmt.Errorf("jobDefinitionName is empty in the rendered job definition")
-	}
-	if c.KeepCount <= 0 && len(c.KeepRevision) == 0 {
-		return fmt.Errorf("deregister requires --keep-count and/or --keep-revision")
 	}
 	der, kept, err := app.applyRetention(name, c.KeepCount, c.KeepRevision)
 	if err != nil {

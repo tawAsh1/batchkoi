@@ -74,7 +74,9 @@ func (c *InitCmd) Run(app *App) error {
 	}
 
 	var cfg strings.Builder
-	fmt.Fprintf(&cfg, "region: %s\n", app.awsCfg.Region)
+	if app.awsCfg.Region != "" {
+		fmt.Fprintf(&cfg, "region: %s\n", app.awsCfg.Region)
+	}
 	fmt.Fprintf(&cfg, "job_definition: %s\n", jobdefFile)
 	if c.JobQueue != "" {
 		fmt.Fprintf(&cfg, "job_queue: %s\n", c.JobQueue)

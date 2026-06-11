@@ -18,6 +18,7 @@ require (
 	github.com/hashicorp/go-envparse v0.1.0
 	github.com/hashicorp/go-version v1.9.0
 	github.com/hexops/gotextdiff v1.0.3
+	golang.org/x/term v0.44.0
 	sigs.k8s.io/yaml v1.6.0
 )
 

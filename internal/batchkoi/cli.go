@@ -31,10 +31,7 @@ func Run(ctx context.Context, ver string) int {
 		kong.DefaultEnvars("BATCHKOI"), // every flag falls back to BATCHKOI_*, like lambroll
 	)
 
-	app, err := NewApp(ctx, &cli)
-	kctx.FatalIfErrorf(err)
-
-	err = kctx.Run(app)
+	err := kctx.Run(NewApp(ctx, &cli))
 	var ee exitError
 	if errors.As(err, &ee) {
 		return ee.code

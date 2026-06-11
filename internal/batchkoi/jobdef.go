@@ -54,6 +54,9 @@ func (app *App) loadJobDefinition() (*batch.RegisterJobDefinitionInput, error) {
 	}
 	var in batch.RegisterJobDefinitionInput
 	dec := json.NewDecoder(bytes.NewReader(src))
+	// The file mirrors the API shape 1:1, so an unknown key is a typo that
+	// would otherwise silently drop a field from the registered definition.
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
 		return nil, fmt.Errorf("failed to parse job definition %s: %w", app.config.JobDefinition, err)
 	}

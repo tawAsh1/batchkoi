@@ -1,6 +1,7 @@
 package batchkoi
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	cwltypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 )
 
 const defaultLogGroup = "/aws/batch/job"
@@ -22,21 +24,27 @@ type RunCmd struct {
 	Name     string            `name:"name" help:"Job name (default: <jobDefinitionName>-<unixtime>)."`
 	Command  []string          `name:"command" help:"Override the container command (repeatable)."`
 	Env      map[string]string `name:"env" short:"e" help:"Override/add container environment variables (KEY=VALUE, repeatable)."`
+	Array    int32             `name:"array" help:"Submit as an array job with N children (2-10000); child logs are tailed with per-child prefixes."`
 	NoWait   bool              `name:"no-wait" help:"Submit and return the job id without tailing logs."`
 }
 
 // RunResult is the outcome of a run.
 type RunResult struct {
-	JobName       string `json:"jobName"`
-	JobID         string `json:"jobId"`
-	JobDefinition string `json:"jobDefinition"`
-	Status        string `json:"status"`
-	ExitCode      *int32 `json:"exitCode,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	JobName            string           `json:"jobName"`
+	JobID              string           `json:"jobId"`
+	JobDefinition      string           `json:"jobDefinition"`
+	Status             string           `json:"status"`
+	ExitCode           *int32           `json:"exitCode,omitempty"`
+	Reason             string           `json:"reason,omitempty"`
+	ArraySize          int32            `json:"arraySize,omitempty"`
+	ArrayStatusSummary map[string]int32 `json:"arrayStatusSummary,omitempty"`
 }
 
 func (r RunResult) String() string {
 	s := fmt.Sprintf("%s (%s): %s", r.JobName, r.JobID, r.Status)
+	if r.ArraySize > 0 {
+		s += fmt.Sprintf(" (array: %d/%d succeeded)", r.ArrayStatusSummary["SUCCEEDED"], r.ArraySize)
+	}
 	if r.ExitCode != nil {
 		s += fmt.Sprintf(" exit=%d", *r.ExitCode)
 	}
@@ -47,6 +55,9 @@ func (r RunResult) String() string {
 }
 
 func (c *RunCmd) Run(app *App) error {
+	if c.Array != 0 && (c.Array < 2 || c.Array > 10000) {
+		return fmt.Errorf("--array must be between 2 and 10000 (AWS Batch limits)")
+	}
 	if err := app.setup(); err != nil {
 		return err
 	}
@@ -85,6 +96,9 @@ func (c *RunCmd) Run(app *App) error {
 	if ov := containerOverrides(c.Command, c.Env); ov != nil {
 		in.ContainerOverrides = ov
 	}
+	if c.Array > 0 {
+		in.ArrayProperties = &types.ArrayProperties{Size: aws.Int32(c.Array)}
+	}
 
 	out, err := app.batch.SubmitJob(app.ctx, in)
 	if err != nil {
@@ -95,6 +109,7 @@ func (c *RunCmd) Run(app *App) error {
 		JobID:         aws.ToString(out.JobId),
 		JobDefinition: jobDef,
 		Status:        string(types.JobStatusSubmitted),
+		ArraySize:     c.Array,
 	}
 
 	if c.NoWait {
@@ -108,9 +123,18 @@ func (c *RunCmd) Run(app *App) error {
 	if app.cli.Output == "json" {
 		logW = os.Stderr
 	}
-	fmt.Fprintf(progressW, "submitted %s (%s) → queue %s\n", res.JobName, res.JobID, queue)
+	if c.Array > 0 {
+		fmt.Fprintf(progressW, "submitted %s (%s) → queue %s [array:%d]\n", res.JobName, res.JobID, queue, c.Array)
+	} else {
+		fmt.Fprintf(progressW, "submitted %s (%s) → queue %s\n", res.JobName, res.JobID, queue)
+	}
 
-	final, err := app.waitAndTail(res.JobID, resolveLogGroup(local), logW, progressW)
+	var final *types.JobDetail
+	if c.Array > 0 {
+		final, err = app.waitAndTailArray(res.JobID, c.Array, resolveLogGroup(local), logW, progressW)
+	} else {
+		final, err = app.waitAndTail(res.JobID, resolveLogGroup(local), logW, progressW)
+	}
 	if err != nil {
 		return err
 	}
@@ -118,6 +142,9 @@ func (c *RunCmd) Run(app *App) error {
 	if final.Container != nil {
 		res.ExitCode = final.Container.ExitCode
 		res.Reason = aws.ToString(final.Container.Reason)
+	}
+	if final.ArrayProperties != nil {
+		res.ArrayStatusSummary = final.ArrayProperties.StatusSummary
 	}
 	if res.Reason == "" {
 		res.Reason = aws.ToString(final.StatusReason)
@@ -197,14 +224,35 @@ func resolveLogGroup(in *batch.RegisterJobDefinitionInput) string {
 }
 
 // waitAndTail polls the job until it reaches a terminal state, streaming new
-// CloudWatch Logs events as they appear.
+// CloudWatch Logs events as they appear. Only the single container log stream
+// is tailed; array and multi-node jobs run fine but their logs are not shown.
 func (app *App) waitAndTail(jobID, logGroup string, logW, progressW io.Writer) (*types.JobDetail, error) {
 	var lastStatus types.JobStatus
 	var streamName string
 	var token *string
+	warned := false
+	tail := func() {
+		tok, err := app.tailOnce(logGroup, streamName, token, logW, "")
+		if err == nil {
+			token = tok
+			return
+		}
+		// The stream is created only when the container writes its first
+		// event, so not-found is normal early on. Anything else (wrong log
+		// group, missing permissions) would otherwise fail silently — warn
+		// once and keep waiting for the job itself.
+		var nf *cwltypes.ResourceNotFoundException
+		if !errors.As(err, &nf) && !warned {
+			fmt.Fprintf(progressW, "warning: cannot read logs from %s/%s: %v\n", logGroup, streamName, err)
+			warned = true
+		}
+	}
 	for {
 		job, err := app.describeJob(jobID)
 		if err != nil {
+			if app.ctx.Err() != nil {
+				return nil, fmt.Errorf("interrupted — job %s may still be running", jobID)
+			}
 			return nil, err
 		}
 		if job.Status != lastStatus {
@@ -215,17 +263,35 @@ func (app *App) waitAndTail(jobID, logGroup string, logW, progressW io.Writer) (
 			streamName = aws.ToString(job.Container.LogStreamName)
 		}
 		if streamName != "" {
-			if tok, err := app.tailOnce(logGroup, streamName, token, logW); err == nil {
-				token = tok
-			}
+			tail()
 		}
 		if job.Status == types.JobStatusSucceeded || job.Status == types.JobStatusFailed {
-			if streamName != "" {
-				app.tailOnce(logGroup, streamName, token, logW)
+			// awslogs delivers to CloudWatch with a few seconds of lag, so
+			// keep draining briefly after the job terminates to avoid
+			// truncating the tail of the output.
+			for i := 0; streamName != "" && i < 3; i++ {
+				if app.sleep(2*time.Second) != nil {
+					break
+				}
+				tail()
 			}
 			return job, nil
 		}
-		time.Sleep(2 * time.Second)
+		if app.sleep(2*time.Second) != nil {
+			return nil, fmt.Errorf("interrupted — job %s is still running", jobID)
+		}
+	}
+}
+
+// sleep waits for d or until the app context is cancelled (returning its error).
+func (app *App) sleep(d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-app.ctx.Done():
+		return app.ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -240,11 +306,11 @@ func (app *App) describeJob(jobID string) (*types.JobDetail, error) {
 	return &out.Jobs[0], nil
 }
 
-// tailOnce drains every available page of new log events. GetLogEvents
-// signals exhaustion by returning the same forward token that was passed in,
-// so a single-call version would print at most one page per poll and could
-// truncate the final flush.
-func (app *App) tailOnce(logGroup, stream string, token *string, w io.Writer) (*string, error) {
+// tailOnce drains every available page of new log events, writing each line
+// behind prefix. GetLogEvents signals exhaustion by returning the same forward
+// token that was passed in, so a single-call version would print at most one
+// page per poll and could truncate the final flush.
+func (app *App) tailOnce(logGroup, stream string, token *string, w io.Writer, prefix string) (*string, error) {
 	for {
 		out, err := app.logs.GetLogEvents(app.ctx, &cloudwatchlogs.GetLogEventsInput{
 			LogGroupName:  aws.String(logGroup),
@@ -256,7 +322,7 @@ func (app *App) tailOnce(logGroup, stream string, token *string, w io.Writer) (*
 			return token, err
 		}
 		for _, e := range out.Events {
-			fmt.Fprintln(w, aws.ToString(e.Message))
+			fmt.Fprintln(w, prefix+aws.ToString(e.Message))
 		}
 		if aws.ToString(out.NextForwardToken) == aws.ToString(token) {
 			return out.NextForwardToken, nil
