@@ -11,7 +11,7 @@ import (
 
 type DeployCmd struct {
 	KeepCount    int   `name:"keep-count" help:"Keep only the N most recent ACTIVE revisions; deregister older ones. 0 = keep all."`
-	KeepRevision []int `name:"keep-revision" help:"Revision number(s) to always keep (repeatable / comma-separated)."`
+	KeepRevision []int `name:"keep-revision" help:"Revision number(s) to protect from --keep-count pruning (repeatable / comma-separated)."`
 	DryRun       bool  `name:"dry-run" help:"Show what would be registered and deregistered without changing anything."`
 }
 
@@ -60,6 +60,11 @@ func (r DeployResult) String() string {
 }
 
 func (c *DeployCmd) Run(app *App) error {
+	// --keep-revision only protects revisions from --keep-count pruning;
+	// alone it would be a silent no-op, so reject the combination early.
+	if len(c.KeepRevision) > 0 && c.KeepCount <= 0 {
+		return fmt.Errorf("--keep-revision has no effect without --keep-count")
+	}
 	if err := app.setup(); err != nil {
 		return err
 	}
@@ -89,7 +94,7 @@ func (c *DeployCmd) Run(app *App) error {
 	}
 
 	// Apply the retention policy (only when requested).
-	if c.KeepCount > 0 || len(c.KeepRevision) > 0 {
+	if c.KeepCount > 0 {
 		der, kept, err := app.applyRetention(name, c.KeepCount, c.KeepRevision)
 		if err != nil {
 			return err
@@ -133,7 +138,7 @@ func (c *DeployCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, re
 		res.Diff = unified
 	}
 
-	if c.KeepCount > 0 || len(c.KeepRevision) > 0 {
+	if c.KeepCount > 0 {
 		if changed {
 			actives = append([]int32{res.NextRevision}, actives...)
 		}

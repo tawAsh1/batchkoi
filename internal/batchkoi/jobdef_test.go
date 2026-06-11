@@ -37,6 +37,26 @@ func TestRenderJobDefinitionExtVars(t *testing.T) {
 	}
 }
 
+func TestLoadJobDefinitionRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobdef.json")
+	// "containerProperites" is a typo: without DisallowUnknownFields it would
+	// be silently dropped and a definition missing the field registered.
+	src := `{"jobDefinitionName": "x", "type": "container", "containerProperites": {"image": "img"}}`
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{
+		ctx:    context.Background(),
+		cli:    &CLI{},
+		config: &Config{JobDefinition: path},
+	}
+	_, err := app.loadJobDefinition()
+	if err == nil || !strings.Contains(err.Error(), "containerProperites") {
+		t.Errorf("want unknown field error mentioning the typo, got %v", err)
+	}
+}
+
 func TestRenderJobDefinitionMissingExtVar(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobdef.jsonnet")

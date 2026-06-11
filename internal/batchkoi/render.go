@@ -19,9 +19,10 @@ func (c *RenderCmd) Run(app *App) error {
 	}
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, src, "", "  "); err != nil {
-		// Not valid JSON — print the raw output so the user can see what went wrong.
+		// Not valid JSON — print the raw output so the user can see what
+		// went wrong, but fail so CI catches it.
 		fmt.Fprintln(os.Stdout, string(src))
-		return nil
+		return fmt.Errorf("rendered %s is not valid JSON: %w", app.config.JobDefinition, err)
 	}
 	fmt.Fprintln(os.Stdout, buf.String())
 	return nil
