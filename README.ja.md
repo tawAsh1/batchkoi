@@ -27,7 +27,7 @@ GitHub Actions では同梱の setup action でインストールできます。
 ```yaml
 - uses: tawAsh1/batchkoi@<commit-sha>   # action はタグでなく commit SHA で固定
   with:
-    version: v0.1.0                     # バイナリのバージョンも固定推奨
+    version: v0.2.0                     # バイナリのバージョンも固定推奨
 - run: batchkoi deploy --ext-str IMAGE_TAG=${{ github.sha }}
 ```
 
