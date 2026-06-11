@@ -1,6 +1,8 @@
 package batchkoi
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -311,4 +313,63 @@ func TestLogsCmd(t *testing.T) {
 	if err := (&LogsCmd{JobID: "ghost"}).Run(app); err == nil {
 		t.Error("logs ghost: want error for unknown job")
 	}
+}
+
+// jsonOut runs cmd with -o json and returns the parsed top-level object.
+func jsonOut(t *testing.T, app *App, run func() error) map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	app.cli.Output = "json"
+	app.stdout = &buf
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, buf.String())
+	}
+	return m
+}
+
+// assertEmptyArray fails unless m[key] is present and is [] — not null and
+// not missing. Empty collections must stay iterable for jq consumers.
+func assertEmptyArray(t *testing.T, m map[string]any, key string) {
+	t.Helper()
+	v, ok := m[key]
+	if !ok {
+		t.Errorf("%s: key missing, want []", key)
+		return
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		t.Errorf("%s = %v (%T), want []", key, v, v)
+		return
+	}
+	if len(arr) != 0 {
+		t.Errorf("%s = %v, want empty", key, arr)
+	}
+}
+
+func TestDeployJSONEmptyCollections(t *testing.T) {
+	// No --keep-count and no changes: deregistered/kept must still be [].
+	fb := &fakeBatch{defs: []types.JobDefinition{activeDef("app", 1, "img:1")}}
+	app := testApp(t, fb, nil, jobdefImg1)
+	m := jsonOut(t, app, func() error { return (&DeployCmd{}).Run(app) })
+	assertEmptyArray(t, m, "deregistered")
+	assertEmptyArray(t, m, "kept")
+}
+
+func TestRevisionsJSONEmpty(t *testing.T) {
+	// Nothing registered yet: revisions must be [], not null.
+	fb := &fakeBatch{}
+	app := testApp(t, fb, nil, jobdefImg1)
+	m := jsonOut(t, app, func() error { return (&RevisionsCmd{}).Run(app) })
+	assertEmptyArray(t, m, "revisions")
+}
+
+func TestListJSONEmpty(t *testing.T) {
+	fb := &fakeBatch{}
+	app := testApp(t, fb, nil, jobdefImg1)
+	m := jsonOut(t, app, func() error { return (&ListCmd{}).Run(app) })
+	assertEmptyArray(t, m, "jobDefinitions")
 }

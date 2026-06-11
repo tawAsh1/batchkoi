@@ -66,7 +66,8 @@ func (c *RevisionsCmd) Run(app *App) error {
 		return err
 	}
 
-	res := &RevisionsResult{JobDefinitionName: name}
+	// Revisions starts empty (not nil) so -o json emits [] when none exist.
+	res := &RevisionsResult{JobDefinitionName: name, Revisions: []RevisionInfo{}}
 	latestMarked := false
 	for _, jd := range revs {
 		info := RevisionInfo{
