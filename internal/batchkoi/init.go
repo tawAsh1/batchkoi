@@ -87,9 +87,20 @@ func (c *InitCmd) Run(app *App) error {
 		JobDefinitionName: aws.ToString(jd.JobDefinitionName),
 		Revision:          aws.ToInt32(jd.Revision),
 	}
+	var created []string
 	for _, path := range []string{configPath, jobdefPath} {
+		_, statErr := os.Stat(path)
+		existed := statErr == nil // only with --force
 		if err := os.WriteFile(path, []byte(files[path]), 0644); err != nil {
+			// Don't leave a half-initialized directory: remove the files this
+			// run created (pre-existing --force'd files stay, already overwritten).
+			for _, p := range created {
+				os.Remove(p)
+			}
 			return err
+		}
+		if !existed {
+			created = append(created, path)
 		}
 		res.Files = append(res.Files, path)
 	}

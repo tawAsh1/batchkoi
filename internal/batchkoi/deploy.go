@@ -2,6 +2,7 @@ package batchkoi
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -65,6 +66,7 @@ func (c *DeployCmd) Run(app *App) error {
 	if len(c.KeepRevision) > 0 && c.KeepCount <= 0 {
 		return fmt.Errorf("--keep-revision has no effect without --keep-count")
 	}
+	warnKeepCountOne(c.KeepCount)
 	if err := app.setup(); err != nil {
 		return err
 	}
@@ -145,6 +147,14 @@ func (c *DeployCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, re
 		res.Deregistered, res.Kept = computeRetention(actives, c.KeepCount, c.KeepRevision)
 	}
 	return app.emit(res)
+}
+
+// warnKeepCountOne flags the rollback footgun: pruning down to a single
+// ACTIVE revision means rollback (which needs the previous one) can't work.
+func warnKeepCountOne(keepCount int) {
+	if keepCount == 1 {
+		fmt.Fprintln(os.Stderr, "warning: --keep-count 1 leaves a single ACTIVE revision — rollback needs at least 2; consider --keep-count 2 or more")
+	}
 }
 
 // applyRetention deregisters ACTIVE revisions that fall outside the keep policy.

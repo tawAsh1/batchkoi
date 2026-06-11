@@ -32,6 +32,7 @@ func TestRenderJobDefinitionExtVars(t *testing.T) {
 	if got := *in.JobDefinitionName; got != "app-prod" {
 		t.Errorf("jobDefinitionName = %q, want %q", got, "app-prod")
 	}
+	//lint:ignore SA1019 any numeric field works for the ext-code test; vcpus is just convenient
 	if got := *in.ContainerProperties.Vcpus; got != 4 {
 		t.Errorf("vcpus = %d, want 4", got)
 	}

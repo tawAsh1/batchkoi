@@ -16,7 +16,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
-type VerifyCmd struct{}
+type VerifyCmd struct {
+	Queue string `name:"queue" short:"q" help:"Job queue to verify (overrides job_queue in config), same as run --queue."`
+}
 
 const (
 	checkOK   = "OK"
@@ -80,7 +82,11 @@ func (c *VerifyCmd) Run(app *App) error {
 	res := &VerifyResult{JobDefinitionName: name}
 	add := func(c verifyCheck) { res.Checks = append(res.Checks, c) }
 
-	add(app.verifyJobQueue(app.config.JobQueue))
+	queue := c.Queue
+	if queue == "" {
+		queue = app.config.JobQueue
+	}
+	add(app.verifyJobQueue(queue))
 
 	cp := local.ContainerProperties
 	if cp == nil {
@@ -118,7 +124,7 @@ func (c *VerifyCmd) Run(app *App) error {
 func (app *App) verifyJobQueue(queue string) verifyCheck {
 	c := verifyCheck{Name: "jobQueue", Target: queue}
 	if queue == "" {
-		c.Status, c.Detail = checkSkip, "job_queue not set in config"
+		c.Status, c.Detail = checkSkip, "no --queue and job_queue not set in config"
 		return c
 	}
 	out, err := app.batch.DescribeJobQueues(app.ctx, &batch.DescribeJobQueuesInput{

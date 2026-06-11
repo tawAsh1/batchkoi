@@ -60,5 +60,13 @@ func (app *App) loadJobDefinition() (*batch.RegisterJobDefinitionInput, error) {
 	if err := dec.Decode(&in); err != nil {
 		return nil, fmt.Errorf("failed to parse job definition %s: %w", app.config.JobDefinition, err)
 	}
+	// Batch rewrites the deprecated vcpus/memory fields into
+	// resourceRequirements on register, so the next describe never matches the
+	// local file again — diff reports changes forever and every deploy
+	// registers a new revision. Warn instead of silently looping.
+	//lint:ignore SA1019 reading the deprecated fields is the point: detect them to warn
+	if cp := in.ContainerProperties; cp != nil && (cp.Vcpus != nil || cp.Memory != nil) {
+		fmt.Fprintf(os.Stderr, "warning: %s uses deprecated containerProperties.vcpus/memory — AWS rewrites them into resourceRequirements, so diff/deploy will always see changes; use resourceRequirements instead\n", app.config.JobDefinition)
+	}
 	return &in, nil
 }

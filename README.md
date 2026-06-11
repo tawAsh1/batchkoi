@@ -82,8 +82,17 @@ local tfstate = std.native('tfstate');
 }
 ```
 
-Native functions: `env(name, default)`, `must_env(name)`, `caller_identity()` (always available),
-`tfstate(addr)` and `ssm(name)` (enabled by the matching plugin). Jsonnet external variables come
+Native functions: `env(name, default)`, `must_env(name)`, `caller_identity()` and
+`ecr_digest(image)` (always available), `tfstate(addr)` and `ssm(name)` (enabled by the matching
+plugin). `ecr_digest` resolves a private ECR image URI (optional `:tag`, default `latest`) to its
+`sha256:...` digest, so deploys pin the exact image while humans keep writing tags:
+
+```jsonnet
+local repo = '123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp';
+{ containerProperties: { image: repo + '@' + std.native('ecr_digest')(repo + ':' + env('IMAGE_TAG', 'latest')) } }
+```
+
+Jsonnet external variables come
 from `--ext-str KEY=VALUE` / `--ext-code` (`std.extVar`). `--envfile .env` exports env files
 before rendering, and every flag falls back to a `BATCHKOI_*` environment variable.
 
@@ -100,13 +109,15 @@ See [_example/](_example/) for a runnable example (no AWS account needed to rend
 | `init` | generate batchkoi.yml + jobdef from an existing job definition (`--jd name[:rev]`, `--jsonnet`) |
 | `render` | evaluate the config and print JSON |
 | `diff` | local vs. registered (`--rev N` to pin; `--exit-code` exits 2 on differences) |
-| `verify` | check queue, IAM roles, ECR image, secrets, log group; non-zero exit on NG |
+| `verify` | check queue, IAM roles, ECR image, secrets, log group; non-zero exit on NG (`--queue`, like run) |
 | `register` | register a new revision unconditionally (`--dry-run` previews payload + revision) |
 | `deploy` | register only if changed, then prune (`--keep-count N`, `--keep-revision N`, `--dry-run`) |
 | `revisions` | list revisions: status, image, tags, latest marker (`--active`) |
 | `rollback` | deregister the latest ACTIVE revision so the previous one is latest again (`--dry-run`) |
 | `deregister` | prune old revisions without registering |
 | `run` | submit a job and tail logs; registers first only if changed (`--rev`, `--command`, `--env`, `--array N`, `--no-wait`) |
+| `logs` | print the CloudWatch logs of an existing job by id (`<job-id>` or `<job-id>:<index>` for an array child; `--follow`) |
+| `list` | one row per job definition in the region: revisions, latest, image (`--all`; works without a config file) |
 
 Notes:
 
@@ -120,7 +131,13 @@ Notes:
   switch pages with ←/→ or p/n; non-interactive runs show progress only. Multi-node jobs are
   submitted fine but not tailed.
 - Rollback is just a deregister: jobs submitted by bare name resolve to the highest ACTIVE
-  revision, so removing the latest makes the previous one current.
+  revision, so removing the latest makes the previous one current. That means rollback needs at
+  least 2 ACTIVE revisions — prefer `--keep-count 2` or more (batchkoi warns on `--keep-count 1`).
+- `--command`/`--env` use SubmitJob's containerOverrides, which only apply to ECS/Fargate
+  container jobs — EKS and multi-node definitions won't pick them up (batchkoi warns).
+- Don't use the deprecated `containerProperties.vcpus`/`memory` fields: AWS rewrites them into
+  `resourceRequirements` server-side, so diff would report changes forever and every deploy would
+  register a new revision (batchkoi warns when it sees them).
 
 ## Design
 

@@ -94,6 +94,14 @@ func (c *RunCmd) Run(app *App) error {
 		JobDefinition: aws.String(jobDef),
 	}
 	if ov := containerOverrides(c.Command, c.Env); ov != nil {
+		// containerOverrides only apply to ECS/Fargate container jobs; for
+		// EKS and multi-node definitions Batch ignores or rejects them.
+		switch {
+		case local.EksProperties != nil:
+			fmt.Fprintln(os.Stderr, "warning: --command/--env set containerOverrides, which do not apply to EKS job definitions — the overrides will not take effect")
+		case local.NodeProperties != nil:
+			fmt.Fprintln(os.Stderr, "warning: --command/--env set containerOverrides, which do not apply to multi-node job definitions — use nodeOverrides via the AWS CLI instead")
+		}
 		in.ContainerOverrides = ov
 	}
 	if c.Array > 0 {
@@ -215,10 +223,8 @@ func containerOverrides(command []string, env map[string]string) *types.Containe
 }
 
 func resolveLogGroup(in *batch.RegisterJobDefinitionInput) string {
-	if in.ContainerProperties != nil && in.ContainerProperties.LogConfiguration != nil {
-		if g := in.ContainerProperties.LogConfiguration.Options["awslogs-group"]; g != "" {
-			return g
-		}
+	if in.ContainerProperties != nil {
+		return logGroupOf(in.ContainerProperties.LogConfiguration)
 	}
 	return defaultLogGroup
 }

@@ -1,4 +1,5 @@
-# CI: build, vet, test, gofmt on every push to main and every PR.
+# CI: build, vet, staticcheck, race-enabled tests, gofmt and windows/darwin
+# cross-compiles on every push to main and every PR.
 #
 # Security: actions are pinned to full commit SHAs, the workflow gets
 # read-only permissions, and checkout does not persist credentials.
@@ -30,11 +31,24 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Pinned by version; fetched via the module proxy with go.sum-style
+      # verification, and `go run` keeps it out of go.mod.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+
       - name: go test
-        run: go test ./...
+        run: go test -race ./...
 
       - name: go build
         run: go build ./...
+
+      # goreleaser ships windows/darwin binaries but CI runs on linux — make
+      # sure platform-dependent code (x/term, char-device checks) still
+      # cross-compiles before a release tag finds out.
+      - name: cross-compile
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=darwin GOARCH=arm64 go build ./...
 
   # E2E for the bundled setup action (action.yml): installs the latest
   # release and runs the binary.

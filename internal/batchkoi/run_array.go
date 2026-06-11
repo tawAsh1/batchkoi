@@ -175,6 +175,12 @@ func (p *childPager) readKeys() {
 		}
 		switch {
 		case n == 1 && buf[0] == 0x03: // Ctrl-C
+			// Restore the terminal before re-raising: the first SIGINT takes
+			// the graceful path (the deferred restore would run anyway), but
+			// after it main() resets the disposition to default, so a second
+			// Ctrl-C kills the process outright — without this the shell
+			// would be left in raw mode. term.Restore is idempotent.
+			p.restore()
 			if proc, err := os.FindProcess(os.Getpid()); err == nil {
 				proc.Signal(os.Interrupt)
 			}
