@@ -2,7 +2,10 @@ package batchkoi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -372,4 +375,174 @@ func TestListJSONEmpty(t *testing.T) {
 	app := testApp(t, fb, nil, jobdefImg1)
 	m := jsonOut(t, app, func() error { return (&ListCmd{}).Run(app) })
 	assertEmptyArray(t, m, "jobDefinitions")
+}
+
+func TestRegisterIfChangedRegistersTheDiffedInput(t *testing.T) {
+	// register() must submit the exact input that was diffed, not a re-render.
+	fb := &fakeBatch{defs: []types.JobDefinition{activeDef("app", 1, "img:1")}}
+	app := testApp(t, fb, nil, jobdefImg2)
+	local, err := app.loadJobDefinition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, _, err := app.registerIfChanged(local, "app")
+	if err != nil || reg == nil {
+		t.Fatalf("registerIfChanged = %+v, %v; want a registration", reg, err)
+	}
+	if len(fb.registered) != 1 || fb.registered[0] != local {
+		t.Error("registered a re-rendered definition, not the one that was diffed")
+	}
+}
+
+func TestRegisterCmd(t *testing.T) {
+	fb := &fakeBatch{defs: []types.JobDefinition{activeDef("app", 1, "img:1")}}
+	app := testApp(t, fb, nil, jobdefImg1) // register is unconditional, same image is fine
+	if err := (&RegisterCmd{}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	if len(fb.registered) != 1 {
+		t.Fatalf("registered %d definitions, want 1", len(fb.registered))
+	}
+}
+
+func TestRegisterDryRunPredictsNextRevision(t *testing.T) {
+	// rev2 is ACTIVE, rev1 INACTIVE: the prediction must count both → next is 3.
+	fb := &fakeBatch{defs: []types.JobDefinition{
+		activeDef("app", 2, "img:2"),
+		inactive(activeDef("app", 1, "img:1")),
+	}}
+	app := testApp(t, fb, nil, jobdefImg2)
+	m := jsonOut(t, app, func() error { return (&RegisterCmd{DryRun: true}).Run(app) })
+	if got := m["nextRevision"]; got != float64(3) {
+		t.Errorf("nextRevision = %v, want 3", got)
+	}
+	if len(fb.registered) != 0 {
+		t.Errorf("dry-run registered %d definitions, want 0", len(fb.registered))
+	}
+}
+
+func TestRunDryRun(t *testing.T) {
+	newApp := func(local string) (*fakeBatch, *App) {
+		fb := &fakeBatch{defs: []types.JobDefinition{
+			activeDef("app", 2, "img:2"),
+			inactive(activeDef("app", 1, "img:1")),
+		}}
+		return fb, testApp(t, fb, nil, local)
+	}
+	assertNothingChanged := func(t *testing.T, fb *fakeBatch) {
+		t.Helper()
+		if len(fb.registered) != 0 || len(fb.submitted) != 0 {
+			t.Errorf("dry-run mutated state: registered=%d submitted=%d", len(fb.registered), len(fb.submitted))
+		}
+	}
+
+	t.Run("unchanged uses latest", func(t *testing.T) {
+		fb, app := newApp(jobdefImg2)
+		m := jsonOut(t, app, func() error { return (&RunCmd{DryRun: true, Queue: "q"}).Run(app) })
+		if m["wouldRegister"] != false || m["jobDefinition"] != fakeArn("app", 2) {
+			t.Errorf("got wouldRegister=%v jobDefinition=%v, want false / %s", m["wouldRegister"], m["jobDefinition"], fakeArn("app", 2))
+		}
+		assertNothingChanged(t, fb)
+	})
+	t.Run("changed would register next revision", func(t *testing.T) {
+		fb, app := newApp(`{"jobDefinitionName":"app","type":"container","containerProperties":{"image":"img:3"}}`)
+		m := jsonOut(t, app, func() error { return (&RunCmd{DryRun: true, Queue: "q"}).Run(app) })
+		if m["wouldRegister"] != true || m["jobDefinition"] != "app:3" {
+			t.Errorf("got wouldRegister=%v jobDefinition=%v, want true / app:3", m["wouldRegister"], m["jobDefinition"])
+		}
+		assertNothingChanged(t, fb)
+	})
+	t.Run("pinned revision", func(t *testing.T) {
+		fb, app := newApp(jobdefImg2)
+		m := jsonOut(t, app, func() error { return (&RunCmd{DryRun: true, Queue: "q", Revision: "1"}).Run(app) })
+		if m["wouldRegister"] != false || m["jobDefinition"] != "app:1" {
+			t.Errorf("got wouldRegister=%v jobDefinition=%v, want false / app:1", m["wouldRegister"], m["jobDefinition"])
+		}
+		assertNothingChanged(t, fb)
+	})
+}
+
+func TestRenderCmd(t *testing.T) {
+	fb := &fakeBatch{}
+	app := testApp(t, fb, nil, jobdefImg1)
+	var buf bytes.Buffer
+	app.stdout = &buf
+	if err := (&RenderCmd{}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("render output is not JSON: %v\n%s", err, buf.String())
+	}
+	if m["jobDefinitionName"] != "app" {
+		t.Errorf("jobDefinitionName = %v, want app", m["jobDefinitionName"])
+	}
+
+	bad := testApp(t, fb, nil, `{not json`)
+	bad.stdout = &bytes.Buffer{}
+	if err := (&RenderCmd{}).Run(bad); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("want 'not valid JSON' error, got %v", err)
+	}
+}
+
+func TestInitCmdThenDiffShowsNoChanges(t *testing.T) {
+	fb := &fakeBatch{defs: []types.JobDefinition{activeDef("app", 2, "img:2")}}
+	app := testApp(t, fb, nil, jobdefImg1) // the jobdef file is unused by init
+	dir := t.TempDir()
+	app.cli.Config = filepath.Join(dir, "batchkoi.yml")
+
+	if err := (&InitCmd{JobDefinition: "app"}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"batchkoi.yml", "jobdef.json"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("init did not write %s: %v", f, err)
+		}
+	}
+	if err := (&InitCmd{JobDefinition: "app"}).Run(app); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("re-init without --force: want 'already exists' error, got %v", err)
+	}
+
+	// The init doc promises `diff` right after init shows no changes.
+	app2 := &App{
+		ctx:    context.Background(),
+		cli:    &CLI{Config: app.cli.Config, Output: "json"},
+		batch:  fb,
+		logs:   &fakeLogs{},
+		stdout: &bytes.Buffer{},
+	}
+	m := jsonOut(t, app2, func() error { return (&DiffCmd{}).Run(app2) })
+	if m["changed"] != false {
+		t.Errorf("diff right after init: changed = %v, want false\ndiff: %v", m["changed"], m["diff"])
+	}
+}
+
+func TestListRevisionsPaginated(t *testing.T) {
+	fb := &fakeBatch{pageSize: 2, defs: []types.JobDefinition{
+		activeDef("app", 1, "img:1"),
+		inactive(activeDef("app", 2, "img:2")),
+		activeDef("app", 3, "img:3"),
+		activeDef("app", 4, "img:4"),
+		activeDef("app", 5, "img:5"),
+	}}
+	app := testApp(t, fb, nil, jobdefImg1)
+
+	revs, err := app.listRevisions("app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revs) != 5 {
+		t.Fatalf("got %d revisions across pages, want 5", len(revs))
+	}
+	if got := aws.ToInt32(revs[0].Revision); got != 5 {
+		t.Errorf("revisions not sorted newest-first: revs[0] = %d, want 5", got)
+	}
+
+	actives, err := app.listActiveRevisions("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actives) != 4 {
+		t.Errorf("got %d ACTIVE revisions, want 4", len(actives))
+	}
 }

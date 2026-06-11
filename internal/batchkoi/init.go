@@ -55,9 +55,11 @@ func (c *InitCmd) Run(app *App) error {
 	}
 
 	// No config file exists yet, so wire AWS directly from the default chain
-	// (AWS_REGION / profile).
-	if err := app.setupAWS(""); err != nil {
-		return err
+	// (AWS_REGION / profile) — unless a test already injected fakes.
+	if app.batch == nil {
+		if err := app.setupAWS(""); err != nil {
+			return err
+		}
 	}
 
 	jd, err := app.findJobDefinition(c.JobDefinition)

@@ -1,10 +1,12 @@
 package batchkoi
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/hashicorp/go-envparse"
 	goversion "github.com/hashicorp/go-version"
@@ -36,6 +38,10 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config %s: %w", path, err)
 	}
+	b, err = expandConfigTemplate(path, b)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render config %s: %w", path, err)
+	}
 	var c Config
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("failed to parse config %s: %w", path, err)
@@ -49,6 +55,42 @@ func LoadConfig(path string) (*Config, error) {
 	c.dir = filepath.Dir(path)
 	c.JobDefinition = c.resolve(c.JobDefinition)
 	return &c, nil
+}
+
+// expandConfigTemplate runs the raw config bytes through text/template with
+// env/must_env (ecspresso-compatible), so values resolve before YAML parsing:
+//
+//	job_queue: '{{ env "JOB_QUEUE" "default-queue" }}'
+//	region: '{{ must_env "AWS_REGION" }}'
+//
+// A config without template actions passes through unchanged.
+func expandConfigTemplate(path string, b []byte) ([]byte, error) {
+	tmpl, err := template.New(filepath.Base(path)).Funcs(template.FuncMap{
+		"env": func(name string, def ...string) string {
+			if v, ok := os.LookupEnv(name); ok {
+				return v
+			}
+			if len(def) > 0 {
+				return def[0]
+			}
+			return ""
+		},
+		"must_env": func(name string) (string, error) {
+			v, ok := os.LookupEnv(name)
+			if !ok {
+				return "", fmt.Errorf("must_env: environment variable %s is not set", name)
+			}
+			return v, nil
+		},
+	}).Parse(string(b))
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, nil); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // checkRequiredVersion enforces the config's required_version constraint

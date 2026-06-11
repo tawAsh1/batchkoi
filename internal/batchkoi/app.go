@@ -62,6 +62,9 @@ func (app *App) setup() error {
 		return err
 	}
 	app.config = cfg
+	if app.batch != nil { // already wired (tests inject fakes)
+		return nil
+	}
 	return app.setupAWS(cfg.Region)
 }
 

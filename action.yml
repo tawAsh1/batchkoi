@@ -57,9 +57,16 @@ runs:
           # shared runner IPs are routinely rate-limited (403).
           api="https://api.github.com/repos/${GH_REPO_SLUG}/releases/latest"
           if [ -n "${GH_TOKEN:-}" ]; then
-            version=$(curl -fsSL --retry 3 -H "Authorization: Bearer ${GH_TOKEN}" "${api}" | jq -r .tag_name)
+            resp=$(curl -fsSL --retry 3 -H "Authorization: Bearer ${GH_TOKEN}" "${api}")
           else
-            version=$(curl -fsSL --retry 3 "${api}" | jq -r .tag_name)
+            resp=$(curl -fsSL --retry 3 "${api}")
+          fi
+          # jq -e: exit non-zero when .tag_name is null/missing, so a
+          # malformed API response fails here with context instead of as a
+          # baffling 404 on the download below.
+          if ! version=$(printf '%s' "${resp}" | jq -re .tag_name); then
+            echo "::error::could not resolve the latest release from ${api}: $(printf '%s' "${resp}" | head -c 200)"
+            exit 1
           fi
         fi
 

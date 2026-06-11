@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,6 +27,7 @@ type RunCmd struct {
 	Env      map[string]string `name:"env" short:"e" help:"Override/add container environment variables (KEY=VALUE, repeatable)."`
 	Array    int32             `name:"array" help:"Submit as an array job with N children (2-10000); child logs are tailed with per-child prefixes."`
 	NoWait   bool              `name:"no-wait" help:"Submit and return the job id without tailing logs."`
+	DryRun   bool              `name:"dry-run" help:"Show what would be registered and submitted without changing anything."`
 }
 
 // RunResult is the outcome of a run.
@@ -78,6 +80,10 @@ func (c *RunCmd) Run(app *App) error {
 		return fmt.Errorf("no job queue: pass --queue or set job_queue in %s", app.cli.Config)
 	}
 
+	if c.DryRun {
+		return c.dryRun(app, local, name, queue)
+	}
+
 	jobDef, err := c.resolveJobDefinition(app, local, name)
 	if err != nil {
 		return err
@@ -94,14 +100,7 @@ func (c *RunCmd) Run(app *App) error {
 		JobDefinition: aws.String(jobDef),
 	}
 	if ov := containerOverrides(c.Command, c.Env); ov != nil {
-		// containerOverrides only apply to ECS/Fargate container jobs; for
-		// EKS and multi-node definitions Batch ignores or rejects them.
-		switch {
-		case local.EksProperties != nil:
-			fmt.Fprintln(os.Stderr, "warning: --command/--env set containerOverrides, which do not apply to EKS job definitions — the overrides will not take effect")
-		case local.NodeProperties != nil:
-			fmt.Fprintln(os.Stderr, "warning: --command/--env set containerOverrides, which do not apply to multi-node job definitions — use nodeOverrides via the AWS CLI instead")
-		}
+		warnInapplicableOverrides(local)
 		in.ContainerOverrides = ov
 	}
 	if c.Array > 0 {
@@ -165,6 +164,102 @@ func (c *RunCmd) Run(app *App) error {
 		return fmt.Errorf("job %s FAILED", res.JobName)
 	}
 	return nil
+}
+
+// warnInapplicableOverrides flags --command/--env on definitions where
+// SubmitJob's containerOverrides don't apply: Batch ignores or rejects them
+// for EKS and multi-node jobs (they only work for ECS/Fargate container jobs).
+func warnInapplicableOverrides(local *batch.RegisterJobDefinitionInput) {
+	switch {
+	case local.EksProperties != nil:
+		fmt.Fprintln(os.Stderr, "warning: --command/--env set containerOverrides, which do not apply to EKS job definitions — the overrides will not take effect")
+	case local.NodeProperties != nil:
+		fmt.Fprintln(os.Stderr, "warning: --command/--env set containerOverrides, which do not apply to multi-node job definitions — use nodeOverrides via the AWS CLI instead")
+	}
+}
+
+// RunDryRunResult is the preview of a run.
+type RunDryRunResult struct {
+	JobName       string            `json:"jobName"`
+	JobQueue      string            `json:"jobQueue"`
+	JobDefinition string            `json:"jobDefinition"`
+	WouldRegister bool              `json:"wouldRegister"`
+	DryRun        bool              `json:"dryRun"`
+	Command       []string          `json:"command,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	ArraySize     int32             `json:"arraySize,omitempty"`
+}
+
+func (r RunDryRunResult) String() string {
+	var b strings.Builder
+	if r.WouldRegister {
+		fmt.Fprintf(&b, "would register %s (definition changed)\n", r.JobDefinition)
+	}
+	fmt.Fprintf(&b, "would submit %s → queue %s (definition %s)", r.JobName, r.JobQueue, r.JobDefinition)
+	if r.ArraySize > 0 {
+		fmt.Fprintf(&b, " [array:%d]", r.ArraySize)
+	}
+	b.WriteString("\nDRY RUN — nothing was changed")
+	return b.String()
+}
+
+// dryRun previews a run: whether a new revision would be registered, and
+// which definition / queue / name the job would be submitted with. Mirrors
+// resolveJobDefinition without registering or submitting anything.
+func (c *RunCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, name, queue string) error {
+	if containerOverrides(c.Command, c.Env) != nil {
+		warnInapplicableOverrides(local)
+	}
+	res := &RunDryRunResult{
+		JobName:   c.Name,
+		JobQueue:  queue,
+		DryRun:    true,
+		Command:   c.Command,
+		Env:       c.Env,
+		ArraySize: c.Array,
+	}
+	if res.JobName == "" {
+		res.JobName = name + "-<unixtime>"
+	}
+
+	switch c.Revision {
+	case "":
+		latest, err := app.latestJobDefinition(name)
+		if err != nil {
+			return err
+		}
+		changed, _, err := computeDiff(local, latest, name)
+		if err != nil {
+			return err
+		}
+		if changed {
+			// INACTIVE revisions count too: the next revision is max(all)+1.
+			all, err := app.listRevisions(name, "")
+			if err != nil {
+				return err
+			}
+			res.WouldRegister = true
+			res.JobDefinition = fmt.Sprintf("%s:%d", name, maxRevision(all)+1)
+		} else {
+			res.JobDefinition = aws.ToString(latest.JobDefinitionArn)
+		}
+	case "latest":
+		latest, err := app.latestJobDefinition(name)
+		if err != nil {
+			return err
+		}
+		if latest == nil {
+			return fmt.Errorf("no active revision found for %s", name)
+		}
+		res.JobDefinition = fmt.Sprintf("%s:%d", name, aws.ToInt32(latest.Revision))
+	default:
+		n, err := strconv.Atoi(c.Revision)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("invalid --revision %q (use 'latest' or a positive number)", c.Revision)
+		}
+		res.JobDefinition = fmt.Sprintf("%s:%d", name, n)
+	}
+	return app.emit(res)
 }
 
 // resolveJobDefinition decides which job definition to submit.

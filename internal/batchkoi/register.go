@@ -20,7 +20,11 @@ func (c *RegisterCmd) Run(app *App) error {
 	if c.DryRun {
 		return c.dryRun(app)
 	}
-	res, err := app.register()
+	local, err := app.loadJobDefinition()
+	if err != nil {
+		return err
+	}
+	res, err := app.register(local)
 	if err != nil {
 		return err
 	}
@@ -95,16 +99,14 @@ func (app *App) registerIfChanged(local *batch.RegisterJobDefinitionInput, name 
 	if !changed {
 		return nil, latest, nil
 	}
-	reg, err = app.register()
+	reg, err = app.register(local)
 	return reg, latest, err
 }
 
-// register renders the local job definition and registers a new revision.
-func (app *App) register() (*RegisterResult, error) {
-	in, err := app.loadJobDefinition()
-	if err != nil {
-		return nil, err
-	}
+// register registers in as a new revision. It takes the already-rendered
+// input (rather than rendering again) so the definition that was diffed is
+// byte-for-byte the one that gets registered.
+func (app *App) register(in *batch.RegisterJobDefinitionInput) (*RegisterResult, error) {
 	out, err := app.batch.RegisterJobDefinition(app.ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("RegisterJobDefinition: %w", err)
