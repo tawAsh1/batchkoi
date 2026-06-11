@@ -53,6 +53,19 @@ func (app *App) latestJobDefinition(name string) (*types.JobDefinition, error) {
 	return &revs[0], nil
 }
 
+// maxRevision returns the highest revision number among revs (0 when empty).
+// Batch never reuses revision numbers, so the next register always creates
+// maxRevision(all revisions, INACTIVE included) + 1.
+func maxRevision(revs []types.JobDefinition) int32 {
+	var max int32
+	for _, jd := range revs {
+		if rev := aws.ToInt32(jd.Revision); rev > max {
+			max = rev
+		}
+	}
+	return max
+}
+
 // jobDefinitionByRevision fetches one specific revision (ACTIVE or INACTIVE).
 func (app *App) jobDefinitionByRevision(name string, rev int) (*types.JobDefinition, error) {
 	spec := fmt.Sprintf("%s:%d", name, rev)

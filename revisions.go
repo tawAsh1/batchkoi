@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -14,11 +15,12 @@ type RevisionsCmd struct {
 
 // RevisionInfo is one row of `batchkoi revisions`.
 type RevisionInfo struct {
-	Revision         int32  `json:"revision"`
-	Status           string `json:"status"`
-	Latest           bool   `json:"latest,omitempty"` // highest ACTIVE revision
-	Image            string `json:"image,omitempty"`
-	JobDefinitionArn string `json:"jobDefinitionArn"`
+	Revision         int32             `json:"revision"`
+	Status           string            `json:"status"`
+	Latest           bool              `json:"latest,omitempty"` // highest ACTIVE revision
+	Image            string            `json:"image,omitempty"`
+	Tags             map[string]string `json:"tags,omitempty"`
+	JobDefinitionArn string            `json:"jobDefinitionArn"`
 }
 
 // RevisionsResult is the outcome of `batchkoi revisions`.
@@ -30,13 +32,13 @@ type RevisionsResult struct {
 func (r RevisionsResult) String() string {
 	var b strings.Builder
 	w := tabwriter.NewWriter(&b, 2, 8, 2, ' ', 0)
-	fmt.Fprintln(w, "REVISION\tSTATUS\tIMAGE")
+	fmt.Fprintln(w, "REVISION\tSTATUS\tIMAGE\tTAGS")
 	for _, rev := range r.Revisions {
 		status := rev.Status
 		if rev.Latest {
 			status += " (latest)"
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\n", rev.Revision, status, rev.Image)
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", rev.Revision, status, rev.Image, tagsString(rev.Tags))
 	}
 	w.Flush()
 	return strings.TrimRight(b.String(), "\n")
@@ -79,7 +81,25 @@ func (c *RevisionsCmd) Run(app *App) error {
 		if jd.ContainerProperties != nil {
 			info.Image = aws.ToString(jd.ContainerProperties.Image)
 		}
+		info.Tags = jd.Tags
 		res.Revisions = append(res.Revisions, info)
 	}
 	return app.emit(res)
+}
+
+// tagsString renders tags as "k=v,k=v" with sorted keys ("-" when none).
+func tagsString(tags map[string]string) string {
+	if len(tags) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + tags[k]
+	}
+	return strings.Join(parts, ",")
 }
