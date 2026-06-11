@@ -3,6 +3,7 @@ package batchkoi
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -190,5 +191,6 @@ func testApp(t *testing.T, fb *fakeBatch, fl *fakeLogs, jobdefJSON string) *App 
 		config: &Config{JobDefinition: path, dir: dir},
 		batch:  fb,
 		logs:   fl,
+		stdout: io.Discard, // tests that assert output swap in a buffer
 	}
 }

@@ -78,7 +78,9 @@ func (c *DeployCmd) Run(app *App) error {
 	if name == "" {
 		return fmt.Errorf("jobDefinitionName is empty in the rendered job definition")
 	}
-	res := &DeployResult{JobDefinitionName: name, DryRun: c.DryRun}
+	// Slices start empty (not nil) so -o json emits [] for them even when no
+	// retention policy runs.
+	res := &DeployResult{JobDefinitionName: name, DryRun: c.DryRun, Deregistered: []int32{}, Kept: []int32{}}
 
 	if c.DryRun {
 		return c.dryRun(app, local, res)
@@ -183,8 +185,10 @@ func (app *App) applyRetention(name string, keepCount int, keepRevision []int) (
 
 // computeRetention decides which revisions to keep vs deregister. revisions must
 // be sorted newest-first. keepCount <= 0 keeps everything; the revisions in
-// keepRevision are always protected.
+// keepRevision are always protected. The returned slices are never nil, so
+// empty collections marshal as [] (not null) in -o json — jq-friendly.
 func computeRetention(revisions []int32, keepCount int, keepRevision []int) (deregister, kept []int32) {
+	deregister, kept = []int32{}, []int32{}
 	protect := make(map[int32]bool, len(keepRevision))
 	for _, r := range keepRevision {
 		protect[int32(r)] = true

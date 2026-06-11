@@ -3,6 +3,8 @@ package batchkoi
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -36,6 +38,7 @@ type App struct {
 	awsCfg aws.Config
 	batch  batchAPI
 	logs   logsAPI
+	stdout io.Writer // result output (emit); os.Stdout outside tests
 
 	identity *sts.GetCallerIdentityOutput // cached by callerIdentity()
 }
@@ -43,7 +46,7 @@ type App struct {
 // NewApp constructs the app. Config and AWS clients are loaded lazily via setup()
 // so that commands like version/help work without a config file or credentials.
 func NewApp(ctx context.Context, cli *CLI) *App {
-	return &App{ctx: ctx, cli: cli}
+	return &App{ctx: ctx, cli: cli, stdout: os.Stdout}
 }
 
 // setup loads batchkoi.yml and wires up the AWS clients. It is idempotent.

@@ -3,6 +3,7 @@ package batchkoi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -15,15 +16,19 @@ type result interface {
 
 // emit prints r as indented JSON when --output json, otherwise as text.
 func (app *App) emit(r result) error {
+	w := io.Writer(os.Stdout)
+	if app.stdout != nil {
+		w = app.stdout
+	}
 	if app.cli.Output == "json" {
 		b, err := json.MarshalIndent(r, "", "  ")
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(os.Stdout, string(b))
+		_, err = fmt.Fprintln(w, string(b))
 		return err
 	}
-	_, err := fmt.Fprintln(os.Stdout, r.String())
+	_, err := fmt.Fprintln(w, r.String())
 	return err
 }
 
