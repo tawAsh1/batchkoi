@@ -1,0 +1,111 @@
+# batchkoi 🎣
+
+バッチこい！ AWS Batch のジョブ定義をコードで管理する小さなデプロイツールです。
+ECS における [ecspresso](https://github.com/kayac/ecspresso)、Lambda における
+[lambroll](https://github.com/fujiwara/lambroll) の Batch 版を目指しています。
+
+[English README](README.md)
+
+Batch のジョブ定義はリビジョン管理されていて、イメージタグを更新するたびに新しい
+リビジョンが積み上がります。この回転の速い部分を Terraform で追いかけるのはつらいので、
+そこだけを batchkoi が引き受けます。管理対象はジョブ定義のみで、コンピューティング環境や
+ジョブキューは Terraform/CDK の担当のままです。
+
+## インストール
+
+```sh
+go install github.com/tawAsh1/batchkoi@latest
+```
+
+[Releases](https://github.com/tawAsh1/batchkoi/releases) にビルド済みバイナリもあります。
+
+## 使い方
+
+```sh
+batchkoi init --jd my-jobdef     # AWS 上の定義から batchkoi.yml + jobdef.json を生成
+batchkoi diff                    # ローカル定義と最新リビジョンの差分
+batchkoi verify                  # キュー・IAM ロール・イメージ・シークレット・ロググループの存在確認
+batchkoi deploy --keep-count 5   # 変更があれば登録し、新しい 5 リビジョンだけ残す
+batchkoi run -q my-queue         # ジョブを投入して CloudWatch Logs を tail
+```
+
+カレントディレクトリの `batchkoi.yml` を読みます（`-c` で変更可）。
+
+## 設定
+
+ecspresso と同じく、ツール設定とジョブ定義の 2 ファイル構成です。
+
+```yaml
+# batchkoi.yml
+region: ap-northeast-1
+job_definition: jobdef.jsonnet
+# required_version: ">= 0.1.0"
+# job_queue: my-job-queue        # run のデフォルトキュー
+plugins:
+  - name: tfstate
+    config: { path: terraform.tfstate }
+```
+
+```jsonnet
+// jobdef.jsonnet — RegisterJobDefinition のリクエストをそのまま書く
+local env = std.native('env');
+local tfstate = std.native('tfstate');
+{
+  jobDefinitionName: 'myapp',
+  type: 'container',
+  platformCapabilities: ['FARGATE'],
+  containerProperties: {
+    image: 'myapp:' + env('IMAGE_TAG', 'latest'),
+    executionRoleArn: tfstate('aws_iam_role.batch_exec.arn'),
+    resourceRequirements: [
+      { type: 'VCPU', value: '0.25' },
+      { type: 'MEMORY', value: '512' },
+    ],
+  },
+}
+```
+
+ネイティブ関数は `env(name, default)` / `must_env(name)` / `caller_identity()`（常時）と、
+プラグインで有効になる `tfstate(addr)` / `ssm(name)`。`--ext-str KEY=VALUE` / `--ext-code` で
+`std.extVar` に値を渡せます。`--envfile .env` で環境変数ファイルを読み込み、すべてのフラグは
+`BATCHKOI_*` 環境変数でも指定できます。
+
+動かせるサンプルは [_example/](_example/) にあります（render だけなら AWS アカウント不要）。
+
+## コマンド
+
+| コマンド | 動作 |
+|---|---|
+| `init` | 既存のジョブ定義から設定ファイル一式を生成（`--jd name[:rev]`、`--jsonnet`） |
+| `render` | 定義を評価して JSON を出力 |
+| `diff` | 登録済みリビジョンとの差分（`--rev N` で固定、`--exit-code` は差分ありで exit 2） |
+| `verify` | 参照先リソースの存在確認。NG があれば非ゼロ終了 |
+| `register` | 無条件に新リビジョンを登録（`--dry-run` で内容と番号を事前表示） |
+| `deploy` | 変更時のみ登録し、古いリビジョンを整理（`--keep-count` / `--keep-revision` / `--dry-run`） |
+| `revisions` | リビジョン一覧。ステータス・イメージ・タグ・latest 表示（`--active`） |
+| `rollback` | 最新 ACTIVE リビジョンを deregister して一つ前を latest に戻す（`--dry-run`） |
+| `deregister` | 登録せずにリビジョン整理だけ行う |
+| `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--no-wait`） |
+
+`--keep-count` / `--keep-revision` を渡さない限り deregister は一切起きません。
+削除対象は `deploy --dry-run` で事前に確認できます。`run` はジョブ失敗時に非ゼロで終了し、
+どのコマンドも `-o json` で機械可読な出力になります。
+
+## 設計
+
+- 管理するのはジョブ定義だけ。毎デプロイで変わる部分に絞る
+- 設定ファイルは API のリクエスト形そのもの。独自スキーマを覚える必要はない
+- 収束待ちはない。Batch のジョブは使い捨てなので、deploy は新リビジョンの登録、
+  rollback はその取り消しがすべて
+
+## 謝辞
+
+[fujiwara](https://github.com/fujiwara) さんの
+[lambroll](https://github.com/fujiwara/lambroll) と
+[ecspresso](https://github.com/kayac/ecspresso) に直接影響を受けています。
+設定モデルも Jsonnet ネイティブ関数も CLI の操作感もこれらに倣いました。
+[tfstate-lookup](https://github.com/fujiwara/tfstate-lookup) を利用しています。
+
+## ライセンス
+
+MIT

@@ -1,0 +1,21 @@
+# Keeps the SHA-pinned actions and Go modules up to date via PRs.
+#
+# cooldown: don't propose a new release until it has been public for 7 days —
+# compromised packages are usually caught (and yanked) within days of
+# publication, so waiting out the window avoids pulling them in. Security
+# updates are exempt from the cooldown and arrive immediately.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
