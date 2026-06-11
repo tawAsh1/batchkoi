@@ -122,18 +122,13 @@ func (c *DeployCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, re
 	}
 	var latest *types.JobDefinition
 	var actives []int32
-	var maxRev int32
 	for i := range all {
 		jd := &all[i]
-		rev := aws.ToInt32(jd.Revision)
-		if rev > maxRev {
-			maxRev = rev
-		}
 		if aws.ToString(jd.Status) == "ACTIVE" {
 			if latest == nil {
 				latest = jd
 			}
-			actives = append(actives, rev)
+			actives = append(actives, aws.ToInt32(jd.Revision))
 		}
 	}
 
@@ -143,7 +138,7 @@ func (c *DeployCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, re
 	}
 	res.NoChange = !changed
 	if changed {
-		res.NextRevision = maxRev + 1
+		res.NextRevision = maxRevision(all) + 1
 		res.Diff = unified
 	}
 

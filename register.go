@@ -1,22 +1,68 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-type RegisterCmd struct{}
+type RegisterCmd struct {
+	DryRun bool `name:"dry-run" help:"Show the definition and the revision number a register would create, without registering."`
+}
 
 func (c *RegisterCmd) Run(app *App) error {
 	if err := app.setup(); err != nil {
 		return err
+	}
+	if c.DryRun {
+		return c.dryRun(app)
 	}
 	res, err := app.register()
 	if err != nil {
 		return err
 	}
 	return app.emit(res)
+}
+
+// RegisterDryRunResult is the preview of a register.
+type RegisterDryRunResult struct {
+	JobDefinitionName string          `json:"jobDefinitionName"`
+	DryRun            bool            `json:"dryRun"`
+	NextRevision      int32           `json:"nextRevision"`
+	JobDefinition     json.RawMessage `json:"jobDefinition"`
+}
+
+func (r RegisterDryRunResult) String() string {
+	return fmt.Sprintf("would register %s:%d\n%sDRY RUN — nothing was changed",
+		r.JobDefinitionName, r.NextRevision, r.JobDefinition)
+}
+
+// dryRun renders the local definition and reports the revision number a
+// register would create, in the same canonical form diff uses.
+func (c *RegisterCmd) dryRun(app *App) error {
+	local, err := app.loadJobDefinition()
+	if err != nil {
+		return err
+	}
+	name := aws.ToString(local.JobDefinitionName)
+	if name == "" {
+		return fmt.Errorf("jobDefinitionName is empty in the rendered job definition")
+	}
+	all, err := app.listRevisions(name, "")
+	if err != nil {
+		return err
+	}
+	body, err := canonicalJSON(local)
+	if err != nil {
+		return err
+	}
+	return app.emit(&RegisterDryRunResult{
+		JobDefinitionName: name,
+		DryRun:            true,
+		NextRevision:      maxRevision(all) + 1,
+		JobDefinition:     json.RawMessage(body),
+	})
 }
 
 // RegisterResult is the outcome of registering a new revision.

@@ -33,6 +33,7 @@ batchkoi render                 # render the job definition to JSON
 batchkoi diff                   # diff vs. the latest registered revision
 batchkoi verify                 # check queue / roles / image / log group exist
 batchkoi register               # register a new revision
+batchkoi register --dry-run     # show the payload + revision number it would create
 batchkoi deploy                 # register only if changed, then prune old revisions
 batchkoi deploy --keep-count 5  # ...keeping only the 5 newest active revisions
 batchkoi deploy --keep-count 5 --dry-run  # preview, incl. what would be deregistered
@@ -147,10 +148,10 @@ actually runs:
 
 ```console
 $ batchkoi revisions
-REVISION  STATUS           IMAGE
-12        ACTIVE (latest)  123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp:9f3c2a1
-11        ACTIVE           123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp:8b21d44
-10        INACTIVE         123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp:77e0c9b
+REVISION  STATUS           IMAGE                                    TAGS
+12        ACTIVE (latest)  123456789012.dkr.ecr....com/myapp:9f3c2  deployedBy=ci,release=v1.4.0
+11        ACTIVE           123456789012.dkr.ecr....com/myapp:8b21d  deployedBy=ci,release=v1.3.2
+10        INACTIVE         123456789012.dkr.ecr....com/myapp:77e0c  -
 ```
 
 Rollback in Batch is simple because jobs submitted by bare name resolve to the **highest ACTIVE
@@ -200,9 +201,9 @@ Add `-o json` / `--output json` to any command for machine-readable output (CI-f
 | `render` | evaluate the config and print JSON |
 | `diff` | diff local config vs. a registered revision (`--rev N`, `--exit-code`) |
 | `verify` | check job queue / IAM roles / ECR image / log group exist |
-| `register` | register a new job definition revision |
+| `register` | register a new job definition revision (`--dry-run`) |
 | `deploy` | register (only if changed) + prune old revisions (`--dry-run`) |
-| `revisions` | list revisions with status and image |
+| `revisions` | list revisions with status, image and tags |
 | `rollback` | deregister the latest revision (previous becomes latest) |
 | `deregister` | deregister old revisions per keep policy |
 | `run` | submit a job and tail its CloudWatch logs |
