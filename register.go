@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 )
 
 type RegisterCmd struct{}
@@ -29,6 +31,26 @@ type RegisterResult struct {
 
 func (r RegisterResult) String() string {
 	return fmt.Sprintf("registered %s:%d\n%s", r.JobDefinitionName, r.Revision, r.JobDefinitionArn)
+}
+
+// registerIfChanged registers the rendered definition only when it differs
+// from the latest ACTIVE revision (deploy/run semantics). reg is nil when
+// nothing changed; latest is the pre-existing latest revision (nil when the
+// definition was never registered).
+func (app *App) registerIfChanged(local *batch.RegisterJobDefinitionInput, name string) (reg *RegisterResult, latest *types.JobDefinition, err error) {
+	latest, err = app.latestJobDefinition(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	changed, _, err := computeDiff(local, latest, name)
+	if err != nil {
+		return nil, latest, err
+	}
+	if !changed {
+		return nil, latest, nil
+	}
+	reg, err = app.register()
+	return reg, latest, err
 }
 
 // register renders the local job definition and registers a new revision.

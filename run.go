@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -16,11 +17,12 @@ import (
 const defaultLogGroup = "/aws/batch/job"
 
 type RunCmd struct {
-	Queue    string   `name:"queue" short:"q" help:"Job queue to submit to (overrides job_queue in config)."`
-	Revision string   `name:"revision" aliases:"rev" help:"Run an existing revision: 'latest' or a number N. Default: register the local definition and run it."`
-	Name     string   `name:"name" help:"Job name (default: <jobDefinitionName>-<unixtime>)."`
-	Command  []string `name:"command" help:"Override the container command (repeatable)."`
-	NoWait   bool     `name:"no-wait" help:"Submit and return the job id without tailing logs."`
+	Queue    string            `name:"queue" short:"q" help:"Job queue to submit to (overrides job_queue in config)."`
+	Revision string            `name:"revision" aliases:"rev" help:"Run an existing revision: 'latest' or a number N. Default: register the local definition only if it changed, then run the latest."`
+	Name     string            `name:"name" help:"Job name (default: <jobDefinitionName>-<unixtime>)."`
+	Command  []string          `name:"command" help:"Override the container command (repeatable)."`
+	Env      map[string]string `name:"env" short:"e" help:"Override/add container environment variables (KEY=VALUE, repeatable)."`
+	NoWait   bool              `name:"no-wait" help:"Submit and return the job id without tailing logs."`
 }
 
 // RunResult is the outcome of a run.
@@ -65,7 +67,7 @@ func (c *RunCmd) Run(app *App) error {
 		return fmt.Errorf("no job queue: pass --queue or set job_queue in %s", app.cli.Config)
 	}
 
-	jobDef, err := c.resolveJobDefinition(app, name)
+	jobDef, err := c.resolveJobDefinition(app, local, name)
 	if err != nil {
 		return err
 	}
@@ -80,8 +82,8 @@ func (c *RunCmd) Run(app *App) error {
 		JobQueue:      aws.String(queue),
 		JobDefinition: aws.String(jobDef),
 	}
-	if len(c.Command) > 0 {
-		in.ContainerOverrides = &types.ContainerOverrides{Command: c.Command}
+	if ov := containerOverrides(c.Command, c.Env); ov != nil {
+		in.ContainerOverrides = ov
 	}
 
 	out, err := app.batch.SubmitJob(app.ctx, in)
@@ -131,14 +133,21 @@ func (c *RunCmd) Run(app *App) error {
 }
 
 // resolveJobDefinition decides which job definition to submit.
-func (c *RunCmd) resolveJobDefinition(app *App, name string) (string, error) {
+func (c *RunCmd) resolveJobDefinition(app *App, local *batch.RegisterJobDefinitionInput, name string) (string, error) {
 	switch c.Revision {
 	case "":
-		reg, err := app.register()
+		// Smart-register, like deploy: only register when the rendered
+		// definition differs from the latest revision.
+		reg, latest, err := app.registerIfChanged(local, name)
 		if err != nil {
 			return "", err
 		}
-		return reg.JobDefinitionArn, nil
+		if reg != nil {
+			fmt.Fprintf(os.Stderr, "registered %s:%d\n", reg.JobDefinitionName, reg.Revision)
+			return reg.JobDefinitionArn, nil
+		}
+		fmt.Fprintf(os.Stderr, "no changes — using %s:%d\n", name, aws.ToInt32(latest.Revision))
+		return aws.ToString(latest.JobDefinitionArn), nil
 	case "latest":
 		latest, err := app.latestJobDefinition(name)
 		if err != nil {
@@ -155,6 +164,27 @@ func (c *RunCmd) resolveJobDefinition(app *App, name string) (string, error) {
 		}
 		return fmt.Sprintf("%s:%d", name, n), nil
 	}
+}
+
+// containerOverrides builds SubmitJob container overrides from --command and
+// --env, or nil when neither is set. Env keys are sorted for stable requests.
+func containerOverrides(command []string, env map[string]string) *types.ContainerOverrides {
+	if len(command) == 0 && len(env) == 0 {
+		return nil
+	}
+	ov := &types.ContainerOverrides{Command: command}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		ov.Environment = append(ov.Environment, types.KeyValuePair{
+			Name:  aws.String(k),
+			Value: aws.String(env[k]),
+		})
+	}
+	return ov
 }
 
 func resolveLogGroup(in *batch.RegisterJobDefinitionInput) string {
@@ -210,18 +240,27 @@ func (app *App) describeJob(jobID string) (*types.JobDetail, error) {
 	return &out.Jobs[0], nil
 }
 
+// tailOnce drains every available page of new log events. GetLogEvents
+// signals exhaustion by returning the same forward token that was passed in,
+// so a single-call version would print at most one page per poll and could
+// truncate the final flush.
 func (app *App) tailOnce(logGroup, stream string, token *string, w io.Writer) (*string, error) {
-	out, err := app.logs.GetLogEvents(app.ctx, &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String(logGroup),
-		LogStreamName: aws.String(stream),
-		StartFromHead: aws.Bool(true),
-		NextToken:     token,
-	})
-	if err != nil {
-		return token, err
+	for {
+		out, err := app.logs.GetLogEvents(app.ctx, &cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(logGroup),
+			LogStreamName: aws.String(stream),
+			StartFromHead: aws.Bool(true),
+			NextToken:     token,
+		})
+		if err != nil {
+			return token, err
+		}
+		for _, e := range out.Events {
+			fmt.Fprintln(w, aws.ToString(e.Message))
+		}
+		if aws.ToString(out.NextForwardToken) == aws.ToString(token) {
+			return out.NextForwardToken, nil
+		}
+		token = out.NextForwardToken
 	}
-	for _, e := range out.Events {
-		fmt.Fprintln(w, aws.ToString(e.Message))
-	}
-	return out.NextForwardToken, nil
 }

@@ -24,6 +24,7 @@ func main() {
 		kong.Description("batchkoi \U0001F3A3 — a minimal deployment tool for AWS Batch job definitions.\nバッチこい！"),
 		kong.UsageOnError(),
 		kong.ConfigureHelp(kong.HelpOptions{Compact: true}),
+		kong.DefaultEnvars("BATCHKOI"), // every flag falls back to BATCHKOI_*, like lambroll
 	)
 
 	app, err := NewApp(context.Background(), &cli)
