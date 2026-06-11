@@ -10,10 +10,12 @@ import (
 )
 
 // listRevisions returns every revision of name with the given status
-// ("ACTIVE", "INACTIVE", or "" for both), sorted newest-first.
+// ("ACTIVE", "INACTIVE", or "" for both), sorted newest-first. An empty name
+// lists revisions of every job definition in the region.
 func (app *App) listRevisions(name, status string) ([]types.JobDefinition, error) {
-	in := &batch.DescribeJobDefinitionsInput{
-		JobDefinitionName: aws.String(name),
+	in := &batch.DescribeJobDefinitionsInput{}
+	if name != "" {
+		in.JobDefinitionName = aws.String(name)
 	}
 	if status != "" {
 		in.Status = aws.String(status)

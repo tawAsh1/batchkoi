@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
+	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/fujiwara/tfstate-lookup/tfstate"
 	jsonnet "github.com/google/go-jsonnet"
@@ -22,7 +24,7 @@ import (
 //	local tfstate = std.native('tfstate');
 //	local account = std.native('caller_identity')().Account;
 func (app *App) nativeFuncs() ([]*jsonnet.NativeFunction, error) {
-	funcs := []*jsonnet.NativeFunction{envFunc(), mustEnvFunc(), app.callerIdentityFunc()}
+	funcs := []*jsonnet.NativeFunction{envFunc(), mustEnvFunc(), app.callerIdentityFunc(), app.ecrDigestFunc()}
 
 	for _, p := range app.config.Plugins {
 		switch p.Name {
@@ -100,6 +102,59 @@ func (app *App) callerIdentityFunc() *jsonnet.NativeFunction {
 				"Arn":     aws.ToString(id.Arn),
 				"UserId":  aws.ToString(id.UserId),
 			}, nil
+		},
+	}
+}
+
+// ecrDigestFunc resolves a private ECR image URI (with an optional :tag,
+// default latest) to its sha256 digest, so templates can pin by digest while
+// humans keep writing tags:
+//
+//	local repo = '123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp';
+//	image: repo + '@' + std.native('ecr_digest')(repo + ':' + env('IMAGE_TAG', 'latest')),
+//
+// A URI that already carries a digest is returned as that digest without an
+// API call. Results are cached per process — Jsonnet may evaluate the same
+// call several times.
+func (app *App) ecrDigestFunc() *jsonnet.NativeFunction {
+	cache := map[string]string{}
+	return &jsonnet.NativeFunction{
+		Name:   "ecr_digest",
+		Params: ast.Identifiers{"image"},
+		Func: func(args []interface{}) (interface{}, error) {
+			image, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("ecr_digest: image must be a string")
+			}
+			if d, ok := cache[image]; ok {
+				return d, nil
+			}
+			m := ecrImageRe.FindStringSubmatch(image)
+			if m == nil {
+				return nil, fmt.Errorf("ecr_digest: %q is not a private ECR image URI (account.dkr.ecr.region.amazonaws.com/repo[:tag])", image)
+			}
+			account, region, repo, tag, digest := m[1], m[2], m[3], m[4], m[5]
+			if digest != "" {
+				return digest, nil
+			}
+			if tag == "" {
+				tag = "latest"
+			}
+			client := ecr.NewFromConfig(app.awsCfg, func(o *ecr.Options) { o.Region = region })
+			out, err := client.DescribeImages(app.ctx, &ecr.DescribeImagesInput{
+				RegistryId:     aws.String(account),
+				RepositoryName: aws.String(repo),
+				ImageIds:       []ecrtypes.ImageIdentifier{{ImageTag: aws.String(tag)}},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("ecr_digest: describe %s: %w", image, err)
+			}
+			if len(out.ImageDetails) == 0 || out.ImageDetails[0].ImageDigest == nil {
+				return nil, fmt.Errorf("ecr_digest: no digest found for %s", image)
+			}
+			d := aws.ToString(out.ImageDetails[0].ImageDigest)
+			cache[image] = d
+			return d, nil
 		},
 	}
 }

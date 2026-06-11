@@ -27,7 +27,7 @@ GitHub Actions では同梱の setup action でインストールできます。
 ```yaml
 - uses: tawAsh1/batchkoi@<commit-sha>   # action はタグでなく commit SHA で固定
   with:
-    version: v0.1.0                     # バイナリのバージョンも固定推奨
+    version: v0.2.0                     # バイナリのバージョンも固定推奨
 - run: batchkoi deploy --ext-str IMAGE_TAG=${{ github.sha }}
 ```
 
@@ -77,8 +77,17 @@ local tfstate = std.native('tfstate');
 }
 ```
 
-ネイティブ関数は `env(name, default)` / `must_env(name)` / `caller_identity()`（常時）と、
-プラグインで有効になる `tfstate(addr)` / `ssm(name)`。`--ext-str KEY=VALUE` / `--ext-code` で
+ネイティブ関数は `env(name, default)` / `must_env(name)` / `caller_identity()` /
+`ecr_digest(image)`（常時）と、プラグインで有効になる `tfstate(addr)` / `ssm(name)`。
+`ecr_digest` はプライベート ECR のイメージ URI（`:tag` 省略時は `latest`）を `sha256:...`
+ダイジェストに解決します。人間はタグを書きつつ、デプロイはダイジェストで固定できます:
+
+```jsonnet
+local repo = '123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp';
+{ containerProperties: { image: repo + '@' + std.native('ecr_digest')(repo + ':' + env('IMAGE_TAG', 'latest')) } }
+```
+
+`--ext-str KEY=VALUE` / `--ext-code` で
 `std.extVar` に値を渡せます。`--envfile .env` で環境変数ファイルを読み込み、すべてのフラグは
 `BATCHKOI_*` 環境変数でも指定できます。
 
@@ -95,13 +104,15 @@ local tfstate = std.native('tfstate');
 | `init` | 既存のジョブ定義から設定ファイル一式を生成（`--jd name[:rev]`、`--jsonnet`） |
 | `render` | 定義を評価して JSON を出力 |
 | `diff` | 登録済みリビジョンとの差分（`--rev N` で固定、`--exit-code` は差分ありで exit 2） |
-| `verify` | 参照先リソースの存在確認。NG があれば非ゼロ終了 |
+| `verify` | 参照先リソースの存在確認。NG があれば非ゼロ終了（`--queue` は run と同じ） |
 | `register` | 無条件に新リビジョンを登録（`--dry-run` で内容と番号を事前表示） |
 | `deploy` | 変更時のみ登録し、古いリビジョンを整理（`--keep-count` / `--keep-revision` / `--dry-run`） |
 | `revisions` | リビジョン一覧。ステータス・イメージ・タグ・latest 表示（`--active`） |
 | `rollback` | 最新 ACTIVE リビジョンを deregister して一つ前を latest に戻す（`--dry-run`） |
 | `deregister` | 登録せずにリビジョン整理だけ行う |
 | `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--array N` / `--no-wait`） |
+| `logs` | 既存ジョブのログを job id で表示（array の子は `<job-id>:<index>`、`--follow` で追跡） |
+| `list` | リージョン内のジョブ定義を 1 行ずつ一覧（`--all`、設定ファイルなしでも動作） |
 
 `--keep-count` を渡さない限り deregister は一切起きません（`--keep-revision` は
 その整理から特定リビジョンを守るためのものです）。削除対象は `deploy --dry-run` で
@@ -111,6 +122,16 @@ docker-compose 風の色付き prefix で interleave 表示、進捗バーで完
 32 子を超える array は 32 子ずつのページに分かれ、←/→（または p/n）でページを
 切り替えられます（CloudWatch の API クォータ対策。非対話実行では進捗表示のみ）。
 マルチノードジョブは投入はできますがログは追いません。
+
+注意点をいくつか:
+
+- rollback は「最新 ACTIVE の deregister」なので、ACTIVE リビジョンが 2 つ以上必要です。
+  `--keep-count` は 2 以上を推奨します（`--keep-count 1` には警告が出ます）
+- `--command` / `--env` は SubmitJob の containerOverrides を使うため、ECS/Fargate の
+  コンテナジョブにしか効きません。EKS・マルチノード定義では無視されます（警告が出ます）
+- 非推奨の `containerProperties.vcpus` / `memory` は使わないでください。AWS がサーバー側で
+  `resourceRequirements` に書き換えるため diff が永遠に差分ありになり、deploy のたびに
+  新リビジョンが登録されてしまいます（検出時に警告が出ます）
 
 ## 設計
 

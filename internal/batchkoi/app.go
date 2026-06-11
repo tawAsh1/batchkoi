@@ -11,14 +11,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
+// batchAPI is the slice of the AWS Batch client that batchkoi uses,
+// so tests can substitute a fake.
+type batchAPI interface {
+	DescribeJobDefinitions(context.Context, *batch.DescribeJobDefinitionsInput, ...func(*batch.Options)) (*batch.DescribeJobDefinitionsOutput, error)
+	RegisterJobDefinition(context.Context, *batch.RegisterJobDefinitionInput, ...func(*batch.Options)) (*batch.RegisterJobDefinitionOutput, error)
+	DeregisterJobDefinition(context.Context, *batch.DeregisterJobDefinitionInput, ...func(*batch.Options)) (*batch.DeregisterJobDefinitionOutput, error)
+	SubmitJob(context.Context, *batch.SubmitJobInput, ...func(*batch.Options)) (*batch.SubmitJobOutput, error)
+	DescribeJobs(context.Context, *batch.DescribeJobsInput, ...func(*batch.Options)) (*batch.DescribeJobsOutput, error)
+	DescribeJobQueues(context.Context, *batch.DescribeJobQueuesInput, ...func(*batch.Options)) (*batch.DescribeJobQueuesOutput, error)
+}
+
+// logsAPI is the slice of the CloudWatch Logs client that batchkoi uses.
+type logsAPI interface {
+	GetLogEvents(context.Context, *cloudwatchlogs.GetLogEventsInput, ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.GetLogEventsOutput, error)
+	DescribeLogGroups(context.Context, *cloudwatchlogs.DescribeLogGroupsInput, ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.DescribeLogGroupsOutput, error)
+}
+
 // App carries shared state across all commands.
 type App struct {
 	ctx    context.Context
 	cli    *CLI
 	config *Config
 	awsCfg aws.Config
-	batch  *batch.Client
-	logs   *cloudwatchlogs.Client
+	batch  batchAPI
+	logs   logsAPI
 
 	identity *sts.GetCallerIdentityOutput // cached by callerIdentity()
 }

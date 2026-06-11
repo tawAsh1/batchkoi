@@ -54,8 +54,10 @@ type CLI struct {
 	Register   RegisterCmd   `cmd:"" help:"Register a new job definition revision."`
 	Deploy     DeployCmd     `cmd:"" help:"Register a new revision (only if changed) and prune old ones."`
 	Run        RunCmd        `cmd:"" help:"Submit a job from the config and tail its CloudWatch logs."`
+	Logs       LogsCmd       `cmd:"" help:"Print the CloudWatch logs of an existing job by id."`
 	Verify     VerifyCmd     `cmd:"" help:"Verify job queue, IAM roles, image and log group before deploying."`
 	Revisions  RevisionsCmd  `cmd:"" help:"List the registered revisions."`
+	List       ListCmd       `cmd:"" help:"List every job definition in the region (works without a config file)."`
 	Rollback   RollbackCmd   `cmd:"" help:"Deregister the latest revision so the previous one becomes latest."`
 	Deregister DeregisterCmd `cmd:"" help:"Deregister old revisions per --keep-count / --keep-revision."`
 	Init       InitCmd       `cmd:"" help:"Generate batchkoi.yml + a job definition file from an existing one on AWS."`

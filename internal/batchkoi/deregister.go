@@ -34,6 +34,7 @@ func (c *DeregisterCmd) Run(app *App) error {
 	if c.KeepCount <= 0 {
 		return fmt.Errorf("--keep-count must be positive")
 	}
+	warnKeepCountOne(c.KeepCount)
 	if err := app.setup(); err != nil {
 		return err
 	}
