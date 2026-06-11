@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned actions and Go modules up to date via PRs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
