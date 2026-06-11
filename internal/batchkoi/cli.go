@@ -1,4 +1,47 @@
-package main
+package batchkoi
+
+import (
+	"context"
+	"errors"
+
+	"github.com/alecthomas/kong"
+)
+
+// version is the binary version, set by Run. Used by the version command and
+// the config's required_version check.
+var version = "dev"
+
+// exitError makes a command exit with a specific code without printing an
+// error message (e.g. diff --exit-code, mirroring git diff).
+type exitError struct{ code int }
+
+func (e exitError) Error() string { return "" }
+
+// Run parses the command line and executes the selected command, returning
+// the process exit code. Errors are printed (and exit non-zero) via kong.
+func Run(ctx context.Context, ver string) int {
+	version = ver
+
+	var cli CLI
+	kctx := kong.Parse(&cli,
+		kong.Name("batchkoi"),
+		kong.Description("batchkoi \U0001F3A3 — a minimal deployment tool for AWS Batch job definitions.\nバッチこい！"),
+		kong.UsageOnError(),
+		kong.ConfigureHelp(kong.HelpOptions{Compact: true}),
+		kong.DefaultEnvars("BATCHKOI"), // every flag falls back to BATCHKOI_*, like lambroll
+	)
+
+	app, err := NewApp(ctx, &cli)
+	kctx.FatalIfErrorf(err)
+
+	err = kctx.Run(app)
+	var ee exitError
+	if errors.As(err, &ee) {
+		return ee.code
+	}
+	kctx.FatalIfErrorf(err)
+	return 0
+}
 
 // CLI is the root command tree parsed by kong.
 type CLI struct {
