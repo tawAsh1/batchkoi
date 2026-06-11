@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Region        string         `json:"region,omitempty"`
 	JobDefinition string         `json:"job_definition"`
+	JobQueue      string         `json:"job_queue,omitempty"`
 	Plugins       []PluginConfig `json:"plugins,omitempty"`
 
 	dir string

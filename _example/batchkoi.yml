@@ -1,5 +1,6 @@
 region: ap-northeast-1
 job_definition: jobdef.jsonnet
+# job_queue: my-job-queue   # default queue for `batchkoi run` (or pass --queue)
 
 plugins:
   - name: tfstate

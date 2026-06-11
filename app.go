@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 )
 
 // App carries shared state across all commands.
@@ -16,6 +17,7 @@ type App struct {
 	config *Config
 	awsCfg aws.Config
 	batch  *batch.Client
+	logs   *cloudwatchlogs.Client
 }
 
 // NewApp constructs the app. Config and AWS clients are loaded lazily via setup()
@@ -45,5 +47,6 @@ func (app *App) setup() error {
 	}
 	app.awsCfg = awsCfg
 	app.batch = batch.NewFromConfig(awsCfg)
+	app.logs = cloudwatchlogs.NewFromConfig(awsCfg)
 	return nil
 }

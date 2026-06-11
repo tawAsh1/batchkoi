@@ -7,9 +7,9 @@
 your **Batch job definitions as code** — render, diff, register, deploy, and run them straight
 from a Jsonnet/JSON file that mirrors the AWS API.
 
-> ⚠️ **Status: early WIP (v0).** `render`, `diff`, `register`, `deploy`, and `deregister` are
-> implemented (the AWS round-trip is not yet battle-tested); `run` / `verify` / `status` / `init`
-> are next. Scope is intentionally **job definitions only** (see Design).
+> ⚠️ **Status: early WIP (v0).** `render`, `diff`, `register`, `deploy`, `deregister`, and `run`
+> are implemented (the AWS round-trip is not yet battle-tested); `verify` / `status` / `init` are
+> next. Scope is intentionally **job definitions only** (see Design).
 
 ## Why
 
@@ -33,8 +33,8 @@ batchkoi diff                   # diff vs. the latest registered revision
 batchkoi register               # register a new revision
 batchkoi deploy                 # register only if changed, then prune old revisions
 batchkoi deploy --keep-count 5  # ...keeping only the 5 newest active revisions
-batchkoi deploy -o json         # machine-readable output
-batchkoi run                    # submit a job + tail logs                 (WIP)
+batchkoi run --queue my-queue   # register, submit a job, and tail its logs
+batchkoi run --rev latest -q my-queue   # ...run the latest existing revision instead
 ```
 
 By default batchkoi reads `batchkoi.yml` in the current directory (override with `-c`).
@@ -47,6 +47,7 @@ Two files, like ecspresso — a tool config and the job definition:
 # batchkoi.yml
 region: ap-northeast-1
 job_definition: jobdef.jsonnet
+# job_queue: my-job-queue        # default queue for `run` (or pass --queue)
 plugins:
   - name: tfstate
     config:
@@ -99,6 +100,24 @@ batchkoi deregister --keep-count 3                   # prune only, without regis
 - `--keep-revision N` — revision(s) to always protect (repeatable / comma-separated).
 - Without these flags nothing is ever deregistered (safe by default).
 
+## Run
+
+`run` submits a one-off job and tails its CloudWatch Logs until it finishes (exiting non-zero if
+the job fails). By default it registers the local definition and runs that; point it at an
+existing revision with `--revision` / `--rev`:
+
+```sh
+batchkoi run --queue my-queue                       # register local def, submit, tail logs
+batchkoi run --rev latest --queue my-queue          # run the latest registered revision
+batchkoi run --rev 7 --queue my-queue               # run a specific revision
+batchkoi run -q my-queue --command echo --command hi  # override the container command
+batchkoi run -q my-queue --no-wait                  # submit only, print the job id
+```
+
+The queue comes from `--queue`/`-q` or `job_queue:` in `batchkoi.yml` (batchkoi doesn't manage
+queues — it just submits to one). Logs are read from the job's `awslogs-group` (default
+`/aws/batch/job`).
+
 Add `-o json` / `--output json` to any command for machine-readable output (CI-friendly).
 
 ## Commands
@@ -110,7 +129,7 @@ Add `-o json` / `--output json` to any command for machine-readable output (CI-f
 | `register` | register a new job definition revision | ✅ |
 | `deploy` | register (only if changed) + prune old revisions | ✅ |
 | `deregister` | deregister old revisions per keep policy | ✅ |
-| `run` | submit a job and tail its CloudWatch logs | 🚧 |
+| `run` | submit a job and tail its CloudWatch logs | ✅ |
 | `verify` | check image / IAM roles / log group | 🚧 |
 | `status` | list registered revisions | 🚧 |
 | `init` | generate config from an existing job definition | 🚧 |
