@@ -8,6 +8,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 // App carries shared state across all commands.
@@ -18,6 +19,8 @@ type App struct {
 	awsCfg aws.Config
 	batch  *batch.Client
 	logs   *cloudwatchlogs.Client
+
+	identity *sts.GetCallerIdentityOutput // cached by callerIdentity()
 }
 
 // NewApp constructs the app. Config and AWS clients are loaded lazily via setup()
@@ -36,10 +39,15 @@ func (app *App) setup() error {
 		return err
 	}
 	app.config = cfg
+	return app.setupAWS(cfg.Region)
+}
 
+// setupAWS wires up the AWS clients. Called by setup(), and directly by
+// commands like init that must run before a config file exists.
+func (app *App) setupAWS(region string) error {
 	var opts []func(*awsconfig.LoadOptions) error
-	if cfg.Region != "" {
-		opts = append(opts, awsconfig.WithRegion(cfg.Region))
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(app.ctx, opts...)
 	if err != nil {
@@ -49,4 +57,17 @@ func (app *App) setup() error {
 	app.batch = batch.NewFromConfig(awsCfg)
 	app.logs = cloudwatchlogs.NewFromConfig(awsCfg)
 	return nil
+}
+
+// callerIdentity returns the STS caller identity, cached per process.
+func (app *App) callerIdentity() (*sts.GetCallerIdentityOutput, error) {
+	if app.identity != nil {
+		return app.identity, nil
+	}
+	out, err := sts.NewFromConfig(app.awsCfg).GetCallerIdentity(app.ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return nil, fmt.Errorf("sts GetCallerIdentity: %w", err)
+	}
+	app.identity = out
+	return out, nil
 }

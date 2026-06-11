@@ -6,24 +6,45 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
+	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 )
 
 type DeployCmd struct {
 	KeepCount    int   `name:"keep-count" help:"Keep only the N most recent ACTIVE revisions; deregister older ones. 0 = keep all."`
 	KeepRevision []int `name:"keep-revision" help:"Revision number(s) to always keep (repeatable / comma-separated)."`
+	DryRun       bool  `name:"dry-run" help:"Show what would be registered and deregistered without changing anything."`
 }
 
-// DeployResult is the outcome of a deploy.
+// DeployResult is the outcome of a deploy (or a dry-run preview of one).
 type DeployResult struct {
 	JobDefinitionName string          `json:"jobDefinitionName"`
+	DryRun            bool            `json:"dryRun,omitempty"`
 	NoChange          bool            `json:"noChange"`
-	Registered        *RegisterResult `json:"registered"`
+	Registered        *RegisterResult `json:"registered,omitempty"`
+	NextRevision      int32           `json:"nextRevision,omitempty"` // dry-run: revision a register would create
 	Deregistered      []int32         `json:"deregistered"`
 	Kept              []int32         `json:"kept"`
+	Diff              string          `json:"diff,omitempty"` // dry-run only
 }
 
 func (r DeployResult) String() string {
 	var b strings.Builder
+	if r.DryRun {
+		if r.NoChange {
+			fmt.Fprintf(&b, "no changes (%s)\n", r.JobDefinitionName)
+		} else {
+			fmt.Fprintf(&b, "would register %s:%d\n", r.JobDefinitionName, r.NextRevision)
+			b.WriteString(r.Diff)
+		}
+		if len(r.Deregistered) > 0 {
+			fmt.Fprintf(&b, "would deregister: %s\n", joinInts(r.Deregistered))
+		}
+		if len(r.Kept) > 0 {
+			fmt.Fprintf(&b, "would keep: %s\n", joinInts(r.Kept))
+		}
+		fmt.Fprint(&b, "DRY RUN — nothing was changed")
+		return b.String()
+	}
 	if r.NoChange {
 		fmt.Fprintf(&b, "no changes (%s)\n", r.JobDefinitionName)
 	} else if r.Registered != nil {
@@ -50,28 +71,20 @@ func (c *DeployCmd) Run(app *App) error {
 	if name == "" {
 		return fmt.Errorf("jobDefinitionName is empty in the rendered job definition")
 	}
-	res := &DeployResult{JobDefinitionName: name}
+	res := &DeployResult{JobDefinitionName: name, DryRun: c.DryRun}
+
+	if c.DryRun {
+		return c.dryRun(app, local, res)
+	}
 
 	// Register only if the rendered definition differs from the latest revision.
 	latest, err := app.latestJobDefinition(name)
 	if err != nil {
 		return err
 	}
-	changed := true
-	if latest != nil {
-		localJSON, err := canonicalJSON(local)
-		if err != nil {
-			return err
-		}
-		remoteInput, err := remoteToInput(latest)
-		if err != nil {
-			return err
-		}
-		remoteJSON, err := canonicalJSON(remoteInput)
-		if err != nil {
-			return err
-		}
-		changed = localJSON != remoteJSON
+	changed, _, err := computeDiff(local, latest, name)
+	if err != nil {
+		return err
 	}
 
 	if changed {
@@ -94,6 +107,52 @@ func (c *DeployCmd) Run(app *App) error {
 		res.Kept = kept
 	}
 
+	return app.emit(res)
+}
+
+// dryRun previews a deploy: whether a new revision would be registered (and
+// its number), and which revisions the retention policy would deregister —
+// counting the would-be new revision, exactly as the real deploy would.
+func (c *DeployCmd) dryRun(app *App, local *batch.RegisterJobDefinitionInput, res *DeployResult) error {
+	// Fetch INACTIVE revisions too: Batch never reuses revision numbers, so
+	// the next revision is max(all)+1, not max(ACTIVE)+1.
+	all, err := app.listRevisions(res.JobDefinitionName, "")
+	if err != nil {
+		return err
+	}
+	var latest *types.JobDefinition
+	var actives []int32
+	var maxRev int32
+	for i := range all {
+		jd := &all[i]
+		rev := aws.ToInt32(jd.Revision)
+		if rev > maxRev {
+			maxRev = rev
+		}
+		if aws.ToString(jd.Status) == "ACTIVE" {
+			if latest == nil {
+				latest = jd
+			}
+			actives = append(actives, rev)
+		}
+	}
+
+	changed, unified, err := computeDiff(local, latest, res.JobDefinitionName)
+	if err != nil {
+		return err
+	}
+	res.NoChange = !changed
+	if changed {
+		res.NextRevision = maxRev + 1
+		res.Diff = unified
+	}
+
+	if c.KeepCount > 0 || len(c.KeepRevision) > 0 {
+		if changed {
+			actives = append([]int32{res.NextRevision}, actives...)
+		}
+		res.Deregistered, res.Kept = computeRetention(actives, c.KeepCount, c.KeepRevision)
+	}
 	return app.emit(res)
 }
 

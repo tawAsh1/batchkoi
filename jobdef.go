@@ -25,6 +25,12 @@ func (app *App) renderJobDefinition() ([]byte, error) {
 	}
 
 	vm := jsonnet.MakeVM()
+	for k, v := range app.cli.ExtStr {
+		vm.ExtVar(k, v)
+	}
+	for k, v := range app.cli.ExtCode {
+		vm.ExtCode(k, v)
+	}
 	funcs, err := app.nativeFuncs()
 	if err != nil {
 		return nil, err
