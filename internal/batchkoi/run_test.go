@@ -89,3 +89,39 @@ func TestColorEnabledNonTerminal(t *testing.T) {
 		t.Error("non-file writer must not enable color")
 	}
 }
+
+func TestChildPagerMove(t *testing.T) {
+	p := &childPager{pages: 4}
+	p.move(-1)
+	if got := p.page.Load(); got != 0 {
+		t.Errorf("move below 0: page = %d, want 0", got)
+	}
+	p.move(1)
+	p.move(1)
+	if got := p.page.Load(); got != 2 {
+		t.Errorf("two moves right: page = %d, want 2", got)
+	}
+	for i := 0; i < 10; i++ {
+		p.move(1)
+	}
+	if got := p.page.Load(); got != 3 {
+		t.Errorf("clamped at last page: page = %d, want 3", got)
+	}
+}
+
+func TestPageBanner(t *testing.T) {
+	want := "── children 32–63 · page 2/4 · ←/→ to switch ──"
+	if got := pageBanner(32, 64, 1, 4, false); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCRLFWriter(t *testing.T) {
+	var b strings.Builder
+	if _, err := (crlfWriter{&b}).Write([]byte("a\nb\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); got != "a\r\nb\r\n" {
+		t.Errorf("got %q, want %q", got, "a\r\nb\r\n")
+	}
+}

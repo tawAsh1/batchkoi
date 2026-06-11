@@ -114,10 +114,11 @@ Notes:
   specific revisions from that pruning), and `deploy --dry-run` shows exactly which revisions
   would go.
 - `run` exits non-zero when the job fails. `-o json` on any command gives machine-readable output.
-- `run --array N` submits an array job and tails every child's logs, interleaved behind a
+- `run --array N` submits an array job and tails the children's logs, interleaved behind a
   colored per-child prefix (docker-compose style) with a progress bar as children finish.
-  Tailing is capped at 32 children (CloudWatch API quotas) — larger arrays show progress only.
-  Multi-node jobs are submitted fine but not tailed.
+  Arrays beyond 32 children are tailed one page of 32 at a time (CloudWatch API quotas) —
+  switch pages with ←/→ or p/n; non-interactive runs show progress only. Multi-node jobs are
+  submitted fine but not tailed.
 - Rollback is just a deregister: jobs submitted by bare name resolve to the highest ACTIVE
   revision, so removing the latest makes the previous one current.
 

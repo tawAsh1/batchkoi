@@ -1,22 +1,26 @@
 package batchkoi
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 	cwltypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"golang.org/x/term"
 )
 
-// maxTailedChildren caps how many child log streams are tailed. GetLogEvents
-// has a 25 TPS default account quota; 32 children polled every 2s stay safely
-// under it. Larger arrays still run — they just show the progress bar only.
+// maxTailedChildren caps how many child log streams are tailed at once.
+// GetLogEvents has a 25 TPS default account quota; 32 children polled every
+// 2s stay safely under it. Larger arrays are tailed one page of 32 at a time
+// (arrow keys switch pages), or show the progress bar only off-terminal.
 const maxTailedChildren = 32
 
 // childTail is the tail state of one array child: its job id
@@ -29,9 +33,9 @@ type childTail struct {
 }
 
 // waitAndTailArray polls an array job's parent until it reaches a terminal
-// state, interleaving every child's log stream behind a colored per-child
-// prefix (docker-compose style) and printing a progress bar as children
-// finish.
+// state, interleaving child log streams behind a colored per-child prefix
+// (docker-compose style) and printing a progress bar as children finish.
+// Arrays larger than maxTailedChildren are tailed one page at a time.
 func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, logW, progressW io.Writer) (*types.JobDetail, error) {
 	width := len(fmt.Sprintf("%d", size-1))
 	color := colorEnabled(logW)
@@ -42,17 +46,42 @@ func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, l
 			prefix: childPrefix(i, width, color),
 		}
 	}
-	tailLogs := size <= maxTailedChildren
-	if !tailLogs {
-		fmt.Fprintf(progressW, "array of %d children — log tailing is capped at %d, showing progress only\n",
-			size, maxTailedChildren)
+
+	tailLogs := true
+	var pager *childPager
+	if size > maxTailedChildren {
+		if pager = startChildPager(size, maxTailedChildren, logW); pager != nil {
+			defer pager.restore()
+			// Raw mode disables output post-processing, so rewrite \n.
+			logW = crlfWriter{logW}
+			progressW = crlfWriter{progressW}
+			fmt.Fprintf(progressW, "array of %d children — tailing %d at a time, ←/→ (or p/n) to switch pages\n",
+				size, maxTailedChildren)
+		} else {
+			tailLogs = false
+			fmt.Fprintf(progressW, "array of %d children — log tailing is capped at %d, showing progress only\n",
+				size, maxTailedChildren)
+		}
 	}
 
 	var lastStatus types.JobStatus
 	lastProgress := ""
+	lastPage := int32(-1)
 	warned := false
-	tailAll := func() {
-		for _, ch := range children {
+	tailPage := func() {
+		page, offset := children, 0
+		if pager != nil {
+			cur := pager.page.Load()
+			offset = int(cur) * maxTailedChildren
+			end := min(offset+maxTailedChildren, len(children))
+			page = children[offset:end]
+			if cur != lastPage {
+				fmt.Fprintln(progressW, pageBanner(offset, end, int(cur), int(pager.pages), color))
+				lastPage = cur
+			}
+		}
+		app.refreshChildStreams(page, offset)
+		for _, ch := range page {
 			if ch.stream == "" {
 				continue
 			}
@@ -85,14 +114,13 @@ func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, l
 			lastStatus = parent.Status
 		}
 		if parent.ArrayProperties != nil {
-			if line := arrayProgress(size, parent.ArrayProperties.StatusSummary, colorEnabled(progressW)); line != lastProgress {
+			if line := arrayProgress(size, parent.ArrayProperties.StatusSummary, color); line != lastProgress {
 				fmt.Fprintln(progressW, line)
 				lastProgress = line
 			}
 		}
 		if tailLogs {
-			app.refreshChildStreams(children)
-			tailAll()
+			tailPage()
 		}
 		if parent.Status == types.JobStatusSucceeded || parent.Status == types.JobStatusFailed {
 			// Same grace drain as the single-job tail: awslogs delivers
@@ -101,7 +129,7 @@ func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, l
 				if app.sleep(2*time.Second) != nil {
 					break
 				}
-				tailAll()
+				tailPage()
 			}
 			return parent, nil
 		}
@@ -111,10 +139,94 @@ func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, l
 	}
 }
 
+// childPager flips which window of children is being tailed, driven by arrow
+// keys (or p/n) read from a raw-mode stdin.
+type childPager struct {
+	pages   int32
+	page    atomic.Int32
+	restore func()
+}
+
+// startChildPager puts stdin into raw mode and listens for paging keys.
+// Returns nil (no paging) when stdin or the log writer is not a terminal.
+func startChildPager(size, perPage int32, logW io.Writer) *childPager {
+	f, ok := logW.(*os.File)
+	if !ok || !isCharDevice(f) || !isCharDevice(os.Stdin) {
+		return nil
+	}
+	old, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return nil
+	}
+	p := &childPager{pages: (size + perPage - 1) / perPage}
+	p.restore = func() { term.Restore(int(os.Stdin.Fd()), old) }
+	go p.readKeys()
+	return p
+}
+
+// readKeys translates keypresses into page moves. Raw mode turns off ISIG,
+// so Ctrl-C is re-raised as a real SIGINT to take the normal interrupt path.
+func (p *childPager) readKeys() {
+	buf := make([]byte, 8)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			return
+		}
+		switch {
+		case n == 1 && buf[0] == 0x03: // Ctrl-C
+			if proc, err := os.FindProcess(os.Getpid()); err == nil {
+				proc.Signal(os.Interrupt)
+			}
+		case n == 3 && buf[0] == 0x1b && (buf[1] == '[' || buf[1] == 'O') && buf[2] == 'C': // →
+			p.move(1)
+		case n == 3 && buf[0] == 0x1b && (buf[1] == '[' || buf[1] == 'O') && buf[2] == 'D': // ←
+			p.move(-1)
+		case n == 1 && (buf[0] == 'n' || buf[0] == ' '):
+			p.move(1)
+		case n == 1 && buf[0] == 'p':
+			p.move(-1)
+		}
+	}
+}
+
+// move shifts the current page by d, clamped to [0, pages).
+func (p *childPager) move(d int32) {
+	for {
+		cur := p.page.Load()
+		next := min(max(cur+d, 0), p.pages-1)
+		if next == cur || p.page.CompareAndSwap(cur, next) {
+			return
+		}
+	}
+}
+
+// pageBanner is the separator printed when the visible page changes,
+// e.g. "── children 32–63 · page 2/4 · ←/→ to switch ──".
+func pageBanner(start, end, page, pages int, color bool) string {
+	s := fmt.Sprintf("── children %d–%d · page %d/%d · ←/→ to switch ──", start, end-1, page+1, pages)
+	if color {
+		return "\x1b[2m" + s + "\x1b[0m"
+	}
+	return s
+}
+
+// crlfWriter rewrites \n to \r\n: raw mode disables the terminal's output
+// post-processing, so bare newlines would stair-step.
+type crlfWriter struct{ w io.Writer }
+
+func (c crlfWriter) Write(b []byte) (int, error) {
+	if _, err := c.w.Write(bytes.ReplaceAll(b, []byte("\n"), []byte("\r\n"))); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
 // refreshChildStreams looks up the log stream of children that don't have one
-// yet. Children are matched by their array index — DescribeJobs is best-effort
+// yet. children may be a page slice; offset is the array index of children[0].
+// Children are matched by their array index — DescribeJobs is best-effort
 // here, the next poll retries anything missing or failed.
-func (app *App) refreshChildStreams(children []*childTail) {
+func (app *App) refreshChildStreams(children []*childTail, offset int) {
 	var missing []string
 	for _, ch := range children {
 		if ch.stream == "" {
@@ -132,8 +244,8 @@ func (app *App) refreshChildStreams(children []*childTail) {
 			if job.ArrayProperties == nil || job.ArrayProperties.Index == nil || job.Container == nil {
 				continue
 			}
-			if idx := int(aws.ToInt32(job.ArrayProperties.Index)); idx >= 0 && idx < len(children) {
-				children[idx].stream = aws.ToString(job.Container.LogStreamName)
+			if pos := int(aws.ToInt32(job.ArrayProperties.Index)) - offset; pos >= 0 && pos < len(children) {
+				children[pos].stream = aws.ToString(job.Container.LogStreamName)
 			}
 		}
 	}
@@ -188,9 +300,10 @@ func colorEnabled(w io.Writer) bool {
 		return false
 	}
 	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
+	return ok && isCharDevice(f)
+}
+
+func isCharDevice(f *os.File) bool {
 	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
