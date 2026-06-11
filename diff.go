@@ -15,7 +15,7 @@ import (
 
 type DiffCmd struct {
 	Revision int  `name:"revision" aliases:"rev" help:"Diff against revision N instead of the latest ACTIVE one."`
-	ExitCode bool `name:"exit-code" help:"Exit with code 1 when the definitions differ (like git diff)."`
+	ExitCode bool `name:"exit-code" help:"Exit with code 2 when the definitions differ (errors stay exit 1, like lambroll / terraform plan)."`
 }
 
 func (c *DiffCmd) Run(app *App) error {
@@ -67,8 +67,10 @@ func (c *DiffCmd) Run(app *App) error {
 		fmt.Fprint(os.Stdout, unified)
 	}
 
+	// 2 distinguishes "has differences" from runtime errors (exit 1) — the
+	// lambroll / terraform plan -detailed-exitcode convention.
 	if changed && c.ExitCode {
-		return exitError{code: 1}
+		return exitError{code: 2}
 	}
 	return nil
 }

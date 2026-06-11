@@ -34,6 +34,9 @@ func (app *App) setup() error {
 	if app.config != nil {
 		return nil
 	}
+	if err := exportEnvFiles(app.cli.Envfile); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(app.cli.Config)
 	if err != nil {
 		return err

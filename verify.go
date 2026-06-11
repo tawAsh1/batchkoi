@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 type VerifyCmd struct{}
@@ -88,6 +90,14 @@ func (c *VerifyCmd) Run(app *App) error {
 		add(app.verifyRole("jobRoleArn", aws.ToString(cp.JobRoleArn)))
 		add(app.verifyImage(aws.ToString(cp.Image)))
 		add(app.verifyLogGroup(cp.LogConfiguration))
+		for _, s := range cp.Secrets {
+			add(app.verifySecret("secret "+aws.ToString(s.Name), aws.ToString(s.ValueFrom)))
+		}
+		if cp.LogConfiguration != nil {
+			for _, s := range cp.LogConfiguration.SecretOptions {
+				add(app.verifySecret("logSecret "+aws.ToString(s.Name), aws.ToString(s.ValueFrom)))
+			}
+		}
 	}
 
 	if err := app.emit(res); err != nil {
@@ -187,6 +197,48 @@ func (app *App) verifyImage(image string) verifyCheck {
 	return c
 }
 
+// verifySecret checks that a secrets/secretOptions valueFrom resolves: an SSM
+// parameter ARN or a Secrets Manager secret ARN (with optional
+// json-key/version-stage/version-id suffixes, as Batch accepts).
+func (app *App) verifySecret(name, valueFrom string) verifyCheck {
+	c := verifyCheck{Name: name, Target: valueFrom}
+	if valueFrom == "" {
+		c.Status, c.Detail = checkNG, "valueFrom is empty"
+		return c
+	}
+	parts := strings.Split(valueFrom, ":")
+	if len(parts) < 6 || parts[0] != "arn" {
+		c.Status, c.Detail = checkSkip, "not an ARN — existence not checked (Batch requires a full ARN)"
+		return c
+	}
+	region := parts[3]
+	switch parts[2] {
+	case "ssm":
+		client := ssm.NewFromConfig(app.awsCfg, func(o *ssm.Options) { o.Region = region })
+		if _, err := client.GetParameter(app.ctx, &ssm.GetParameterInput{
+			Name: aws.String(valueFrom),
+		}); err != nil {
+			c.Status, c.Detail = checkNG, err.Error()
+			return c
+		}
+	case "secretsmanager":
+		// arn:aws:secretsmanager:region:acct:secret:name-XXXXXX[:json-key:version-stage:version-id]
+		arn := strings.Join(parts[:min(len(parts), 7)], ":")
+		client := secretsmanager.NewFromConfig(app.awsCfg, func(o *secretsmanager.Options) { o.Region = region })
+		if _, err := client.DescribeSecret(app.ctx, &secretsmanager.DescribeSecretInput{
+			SecretId: aws.String(arn),
+		}); err != nil {
+			c.Status, c.Detail = checkNG, err.Error()
+			return c
+		}
+	default:
+		c.Status, c.Detail = checkSkip, fmt.Sprintf("unsupported service %q — existence not checked", parts[2])
+		return c
+	}
+	c.Status = checkOK
+	return c
+}
+
 func (app *App) verifyLogGroup(lc *batchtypes.LogConfiguration) verifyCheck {
 	group := defaultLogGroup
 	if lc != nil {
@@ -199,18 +251,28 @@ func (app *App) verifyLogGroup(lc *batchtypes.LogConfiguration) verifyCheck {
 		}
 	}
 	c := verifyCheck{Name: "logGroup", Target: group}
-	out, err := app.logs.DescribeLogGroups(app.ctx, &cloudwatchlogs.DescribeLogGroupsInput{
-		LogGroupNamePrefix: aws.String(group),
-	})
-	if err != nil {
-		c.Status, c.Detail = checkNG, err.Error()
-		return c
-	}
-	for _, g := range out.LogGroups {
-		if aws.ToString(g.LogGroupName) == group {
-			c.Status = checkOK
+	// DescribeLogGroups is a prefix search, so paginate until the exact name
+	// shows up — it may sit behind pages of longer-named groups.
+	var token *string
+	for {
+		out, err := app.logs.DescribeLogGroups(app.ctx, &cloudwatchlogs.DescribeLogGroupsInput{
+			LogGroupNamePrefix: aws.String(group),
+			NextToken:          token,
+		})
+		if err != nil {
+			c.Status, c.Detail = checkNG, err.Error()
 			return c
 		}
+		for _, g := range out.LogGroups {
+			if aws.ToString(g.LogGroupName) == group {
+				c.Status = checkOK
+				return c
+			}
+		}
+		if aws.ToString(out.NextToken) == "" {
+			break
+		}
+		token = out.NextToken
 	}
 	c.Status, c.Detail = checkNG, "not found"
 	return c

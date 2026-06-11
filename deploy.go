@@ -78,20 +78,11 @@ func (c *DeployCmd) Run(app *App) error {
 	}
 
 	// Register only if the rendered definition differs from the latest revision.
-	latest, err := app.latestJobDefinition(name)
+	reg, _, err := app.registerIfChanged(local, name)
 	if err != nil {
 		return err
 	}
-	changed, _, err := computeDiff(local, latest, name)
-	if err != nil {
-		return err
-	}
-
-	if changed {
-		reg, err := app.register()
-		if err != nil {
-			return err
-		}
+	if reg != nil {
 		res.Registered = reg
 	} else {
 		res.NoChange = true

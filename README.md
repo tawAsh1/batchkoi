@@ -50,6 +50,7 @@ Two files, like ecspresso — a tool config and the job definition:
 
 ```yaml
 # batchkoi.yml
+# required_version: ">= 0.1.0"   # refuse to run with an incompatible binary
 region: ap-northeast-1
 job_definition: jobdef.jsonnet
 # job_queue: my-job-queue        # default queue for `run` (or pass --queue)
@@ -135,7 +136,7 @@ Pin-friendly revision management:
 ```sh
 batchkoi diff                    # vs. the latest ACTIVE revision
 batchkoi diff --revision 7       # vs. a pinned revision (alias: --rev)
-batchkoi diff --exit-code        # exit 1 when there are differences (like git diff) — CI guard
+batchkoi diff --exit-code        # exit 2 on differences, 1 on errors (lambroll/terraform style) — CI guard
 batchkoi revisions               # all revisions: number, status, image (latest marked)
 batchkoi revisions --active      # only ACTIVE ones
 batchkoi rollback                # deregister the latest ACTIVE revision
@@ -168,21 +169,24 @@ batchkoi verify                       # job queue / IAM roles / ECR image / log 
 ```
 
 `init` writes the job definition in the same canonical form `diff` uses, so a `diff` right after
-`init` shows no changes. `verify` checks that everything the rendered definition points at exists
-(`[OK] / [NG] / [SKIP]` per check) and exits non-zero if anything is broken — run it in CI before
-`deploy`.
+`init` shows no changes. `verify` checks that everything the rendered definition points at exists — job queue, IAM
+roles, ECR image, log group, and `secrets` / `secretOptions` (SSM parameters and Secrets Manager
+secrets) — reporting `[OK] / [NG] / [SKIP]` per check and exiting non-zero if anything is broken.
+Run it in CI before `deploy`.
 
 ## Run
 
 `run` submits a one-off job and tails its CloudWatch Logs until it finishes (exiting non-zero if
-the job fails). By default it registers the local definition and runs that; point it at an
-existing revision with `--revision` / `--rev`:
+the job fails). By default it deploys-then-runs the local definition — a new revision is
+registered **only if the rendered definition changed** (same smart-register as `deploy`);
+point it at an existing revision with `--revision` / `--rev`:
 
 ```sh
-batchkoi run --queue my-queue                       # register local def, submit, tail logs
+batchkoi run --queue my-queue                       # register local def (if changed), submit, tail logs
 batchkoi run --rev latest --queue my-queue          # run the latest registered revision
 batchkoi run --rev 7 --queue my-queue               # run a specific revision
 batchkoi run -q my-queue --command echo --command hi  # override the container command
+batchkoi run -q my-queue -e FOO=1 -e BAR=2          # override/add container environment variables
 batchkoi run -q my-queue --no-wait                  # submit only, print the job id
 ```
 
@@ -191,6 +195,16 @@ queues — it just submits to one). Logs are read from the job's `awslogs-group`
 `/aws/batch/job`).
 
 Add `-o json` / `--output json` to any command for machine-readable output (CI-friendly).
+
+## Global flags & environment
+
+- Every flag falls back to a `BATCHKOI_*` environment variable (e.g. `BATCHKOI_CONFIG`,
+  `BATCHKOI_OUTPUT=json`), like lambroll's `LAMBROLL_*`.
+- `--envfile .env` (repeatable) exports `KEY=VALUE` files into the environment before rendering,
+  so `env()` / `must_env()` see them. Parsed with
+  [hashicorp/go-envparse](https://github.com/hashicorp/go-envparse), lambroll-compatible.
+- `required_version: ">= 0.1.0, < 1"` in `batchkoi.yml` refuses to run with an incompatible
+  binary (skipped on dev builds), like ecspresso.
 
 ## Commands
 
