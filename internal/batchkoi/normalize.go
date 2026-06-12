@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 )
@@ -25,6 +26,22 @@ func remoteToInput(jd *types.JobDefinition) (*batch.RegisterJobDefinitionInput, 
 		return nil, err
 	}
 	return &in, nil
+}
+
+// normalizeServerDefaults drops values that AWS Batch fills in server-side
+// when the local definition omits them, so a registered default doesn't show
+// up as a perpetual diff (deploy would register a new revision every time).
+// Known case: Fargate definitions registered without
+// fargatePlatformConfiguration come back with {platformVersion: "LATEST"}.
+func normalizeServerDefaults(local, remote *batch.RegisterJobDefinitionInput) {
+	lcp, rcp := local.ContainerProperties, remote.ContainerProperties
+	if lcp == nil || rcp == nil {
+		return
+	}
+	if lcp.FargatePlatformConfiguration == nil && rcp.FargatePlatformConfiguration != nil &&
+		strings.EqualFold(aws.ToString(rcp.FargatePlatformConfiguration.PlatformVersion), "LATEST") {
+		rcp.FargatePlatformConfiguration = nil
+	}
 }
 
 // canonicalJSON renders a value to a stable JSON form for diffing: AWS API key

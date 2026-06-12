@@ -371,14 +371,14 @@ func (app *App) waitAndTail(jobID, logGroup string, logW, progressW io.Writer) (
 			// keep draining briefly after the job terminates to avoid
 			// truncating the tail of the output.
 			for i := 0; streamName != "" && i < 3; i++ {
-				if app.sleep(2*time.Second) != nil {
+				if app.sleep(app.pollEvery()) != nil {
 					break
 				}
 				tail()
 			}
 			return job, nil
 		}
-		if app.sleep(2*time.Second) != nil {
+		if app.sleep(app.pollEvery()) != nil {
 			return nil, fmt.Errorf("interrupted — job %s is still running", jobID)
 		}
 	}

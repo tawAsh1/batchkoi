@@ -90,6 +90,7 @@ func computeDiff(local *batch.RegisterJobDefinitionInput, remote *types.JobDefin
 		if err != nil {
 			return false, "", err
 		}
+		normalizeServerDefaults(local, remoteInput)
 		if remoteJSON, err = canonicalJSON(remoteInput); err != nil {
 			return false, "", err
 		}

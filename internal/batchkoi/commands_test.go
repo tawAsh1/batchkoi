@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 )
 
@@ -544,5 +546,142 @@ func TestListRevisionsPaginated(t *testing.T) {
 	}
 	if len(actives) != 4 {
 		t.Errorf("got %d ACTIVE revisions, want 4", len(actives))
+	}
+}
+
+func TestComputeDiffIgnoresFargateDefault(t *testing.T) {
+	// Registering a FARGATE definition without fargatePlatformConfiguration
+	// makes AWS add {platformVersion: LATEST}; that alone must not read as a
+	// change, or every deploy would register a new revision.
+	local := &batch.RegisterJobDefinitionInput{
+		JobDefinitionName: aws.String("app"),
+		Type:              types.JobDefinitionTypeContainer,
+		ContainerProperties: &types.ContainerProperties{
+			Image: aws.String("img:1"),
+		},
+	}
+	remote := activeDef("app", 1, "img:1")
+	remote.ContainerProperties.FargatePlatformConfiguration = &types.FargatePlatformConfiguration{
+		PlatformVersion: aws.String("LATEST"),
+	}
+	changed, _, err := computeDiff(local, &remote, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("server-filled platformVersion LATEST reported as a change")
+	}
+
+	// A pinned platform version is a real difference and must still show.
+	remote.ContainerProperties.FargatePlatformConfiguration.PlatformVersion = aws.String("1.4.0")
+	changed, _, err = computeDiff(local, &remote, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("pinned platformVersion 1.4.0 not reported as a change")
+	}
+
+	// And a local explicit value still compares normally.
+	local.ContainerProperties.FargatePlatformConfiguration = &types.FargatePlatformConfiguration{
+		PlatformVersion: aws.String("1.4.0"),
+	}
+	changed, _, err = computeDiff(local, &remote, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("identical explicit platformVersion reported as a change")
+	}
+}
+
+func TestLogsArrayFollow(t *testing.T) {
+	fb := &fakeBatch{jobs: map[string]types.JobDetail{
+		"parent": {
+			JobId:         aws.String("parent"),
+			JobName:       aws.String("app-arr"),
+			JobDefinition: aws.String(fakeArn("app", 1)),
+			Status:        types.JobStatusSucceeded,
+			ArrayProperties: &types.ArrayPropertiesDetail{
+				Size:          aws.Int32(2),
+				StatusSummary: map[string]int32{"SUCCEEDED": 2},
+			},
+		},
+		"parent:0": {
+			JobId:           aws.String("parent:0"),
+			Status:          types.JobStatusSucceeded,
+			ArrayProperties: &types.ArrayPropertiesDetail{Index: aws.Int32(0)},
+			Container:       &types.ContainerDetail{LogStreamName: aws.String("app/default/c0")},
+		},
+		"parent:1": {
+			JobId:           aws.String("parent:1"),
+			Status:          types.JobStatusSucceeded,
+			ArrayProperties: &types.ArrayPropertiesDetail{Index: aws.Int32(1)},
+			Container:       &types.ContainerDetail{LogStreamName: aws.String("app/default/c1")},
+		},
+	}}
+	fl := &fakeLogs{events: map[string][]string{
+		"app/default/c0": {"hello-from-0"},
+		"app/default/c1": {"hello-from-1"},
+	}}
+	app := testApp(t, fb, fl, jobdefImg1)
+	app.poll = time.Millisecond
+	var buf bytes.Buffer
+	app.stdout = &buf
+
+	// Parent without --follow points at the rich tail instead of failing flat.
+	if err := (&LogsCmd{JobID: "parent"}).Run(app); err == nil || !strings.Contains(err.Error(), "--follow") {
+		t.Errorf("logs parent without --follow: want error suggesting --follow, got %v", err)
+	}
+
+	if err := (&LogsCmd{JobID: "parent", Follow: true}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "0 | hello-from-0") || !strings.Contains(out, "1 | hello-from-1") {
+		t.Errorf("missing per-child prefixed logs, got:\n%s", out)
+	}
+}
+
+func TestRegisterCopyOfRevision(t *testing.T) {
+	fb := &fakeBatch{defs: []types.JobDefinition{
+		activeDef("app", 2, "img:2"),
+		inactive(activeDef("app", 1, "img:1")),
+	}}
+	app := testApp(t, fb, nil, jobdefImg2)
+	if err := (&RegisterCmd{Revision: 1}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	if len(fb.registered) != 1 {
+		t.Fatalf("registered %d definitions, want 1", len(fb.registered))
+	}
+	if got := aws.ToString(fb.registered[0].ContainerProperties.Image); got != "img:1" {
+		t.Errorf("registered image = %q, want img:1 (the rev 1 copy)", got)
+	}
+	if got := maxRevision(fb.defs); got != 3 {
+		t.Errorf("new revision = %d, want 3", got)
+	}
+
+	if err := (&RegisterCmd{Revision: 99}).Run(app); err == nil {
+		t.Error("want error for unknown revision")
+	}
+}
+
+func TestRegisterCopyDryRun(t *testing.T) {
+	fb := &fakeBatch{defs: []types.JobDefinition{
+		activeDef("app", 2, "img:2"),
+		inactive(activeDef("app", 1, "img:1")),
+	}}
+	app := testApp(t, fb, nil, jobdefImg2)
+	m := jsonOut(t, app, func() error { return (&RegisterCmd{Revision: 1, DryRun: true}).Run(app) })
+	if len(fb.registered) != 0 {
+		t.Errorf("dry-run registered %d definitions, want 0", len(fb.registered))
+	}
+	if got := m["nextRevision"].(float64); got != 3 {
+		t.Errorf("nextRevision = %v, want 3", got)
+	}
+	body, _ := json.Marshal(m["jobDefinition"])
+	if !strings.Contains(string(body), "img:1") {
+		t.Errorf("dry-run body should be the rev 1 copy, got %s", body)
 	}
 }
