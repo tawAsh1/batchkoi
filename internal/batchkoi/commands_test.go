@@ -643,45 +643,47 @@ func TestLogsArrayFollow(t *testing.T) {
 	}
 }
 
-func TestRegisterCopyOfRevision(t *testing.T) {
+func TestDeregisterSpecificRevisions(t *testing.T) {
 	fb := &fakeBatch{defs: []types.JobDefinition{
+		activeDef("app", 3, "img:3"),
 		activeDef("app", 2, "img:2"),
-		inactive(activeDef("app", 1, "img:1")),
+		activeDef("app", 1, "img:1"),
 	}}
-	app := testApp(t, fb, nil, jobdefImg2)
-	if err := (&RegisterCmd{Revision: 1}).Run(app); err != nil {
+	app := testApp(t, fb, nil, jobdefImg1)
+	if err := (&DeregisterCmd{Revision: []int{2}}).Run(app); err != nil {
 		t.Fatal(err)
 	}
-	if len(fb.registered) != 1 {
-		t.Fatalf("registered %d definitions, want 1", len(fb.registered))
-	}
-	if got := aws.ToString(fb.registered[0].ContainerProperties.Image); got != "img:1" {
-		t.Errorf("registered image = %q, want img:1 (the rev 1 copy)", got)
-	}
-	if got := maxRevision(fb.defs); got != 3 {
-		t.Errorf("new revision = %d, want 3", got)
-	}
-
-	if err := (&RegisterCmd{Revision: 99}).Run(app); err == nil {
-		t.Error("want error for unknown revision")
+	if len(fb.deregistered) != 1 || fb.deregistered[0] != fakeArn("app", 2) {
+		t.Errorf("deregistered = %v, want [%s]", fb.deregistered, fakeArn("app", 2))
 	}
 }
 
-func TestRegisterCopyDryRun(t *testing.T) {
+func TestDeregisterSpecificRevisionErrors(t *testing.T) {
 	fb := &fakeBatch{defs: []types.JobDefinition{
 		activeDef("app", 2, "img:2"),
 		inactive(activeDef("app", 1, "img:1")),
 	}}
-	app := testApp(t, fb, nil, jobdefImg2)
-	m := jsonOut(t, app, func() error { return (&RegisterCmd{Revision: 1, DryRun: true}).Run(app) })
-	if len(fb.registered) != 0 {
-		t.Errorf("dry-run registered %d definitions, want 0", len(fb.registered))
+	app := testApp(t, fb, nil, jobdefImg1)
+
+	// Already INACTIVE and never-existed targets fail before deregistering.
+	for _, rev := range []int{1, 99} {
+		if err := (&DeregisterCmd{Revision: []int{rev}}).Run(app); err == nil || !strings.Contains(err.Error(), "not ACTIVE") {
+			t.Errorf("rev %d: want 'not ACTIVE' error, got %v", rev, err)
+		}
 	}
-	if got := m["nextRevision"].(float64); got != 3 {
-		t.Errorf("nextRevision = %v, want 3", got)
+	// A mixed batch with one bad target must not deregister anything.
+	if err := (&DeregisterCmd{Revision: []int{2, 99}}).Run(app); err == nil {
+		t.Error("want error for batch containing a bad revision")
 	}
-	body, _ := json.Marshal(m["jobDefinition"])
-	if !strings.Contains(string(body), "img:1") {
-		t.Errorf("dry-run body should be the rev 1 copy, got %s", body)
+	if len(fb.deregistered) != 0 {
+		t.Errorf("deregistered = %v, want none", fb.deregistered)
+	}
+
+	// --rev and --keep-count are mutually exclusive; one of them is required.
+	if err := (&DeregisterCmd{Revision: []int{2}, KeepCount: 1}).Run(app); err == nil {
+		t.Error("want error combining --rev with --keep-count")
+	}
+	if err := (&DeregisterCmd{}).Run(app); err == nil {
+		t.Error("want error when neither --rev nor --keep-count is given")
 	}
 }

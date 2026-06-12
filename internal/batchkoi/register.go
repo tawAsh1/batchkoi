@@ -3,7 +3,6 @@ package batchkoi
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
@@ -11,57 +10,25 @@ import (
 )
 
 type RegisterCmd struct {
-	Revision int  `name:"revision" aliases:"rev" help:"Register a copy of existing revision N as a new revision (roll-forward), instead of the local file."`
-	DryRun   bool `name:"dry-run" help:"Show the definition and the revision number a register would create, without registering."`
+	DryRun bool `name:"dry-run" help:"Show the definition and the revision number a register would create, without registering."`
 }
 
 func (c *RegisterCmd) Run(app *App) error {
 	if err := app.setup(); err != nil {
 		return err
 	}
-	in, name, err := c.loadInput(app)
+	if c.DryRun {
+		return c.dryRun(app)
+	}
+	local, err := app.loadJobDefinition()
 	if err != nil {
 		return err
 	}
-	if c.DryRun {
-		return c.dryRun(app, in, name)
-	}
-	if c.Revision > 0 {
-		fmt.Fprintf(os.Stderr, "registering a copy of %s:%d\n", name, c.Revision)
-	}
-	res, err := app.register(in)
+	res, err := app.register(local)
 	if err != nil {
 		return err
 	}
 	return app.emit(res)
-}
-
-// loadInput returns what register would send: the rendered local file, or —
-// with --rev N — a copy of that existing revision fetched from AWS (the name
-// still comes from the local config, so --rev can't drift to another
-// definition). Re-registering an old revision makes it the new latest, which
-// is the roll-forward complement to rollback.
-func (c *RegisterCmd) loadInput(app *App) (*batch.RegisterJobDefinitionInput, string, error) {
-	local, err := app.loadJobDefinition()
-	if err != nil {
-		return nil, "", err
-	}
-	name := aws.ToString(local.JobDefinitionName)
-	if name == "" {
-		return nil, "", fmt.Errorf("jobDefinitionName is empty in the rendered job definition")
-	}
-	if c.Revision <= 0 {
-		return local, name, nil
-	}
-	jd, err := app.jobDefinitionByRevision(name, c.Revision)
-	if err != nil {
-		return nil, "", err
-	}
-	in, err := remoteToInput(jd)
-	if err != nil {
-		return nil, "", err
-	}
-	return in, name, nil
 }
 
 // RegisterDryRunResult is the preview of a register.
@@ -77,15 +44,22 @@ func (r RegisterDryRunResult) String() string {
 		r.JobDefinitionName, r.NextRevision, r.JobDefinition)
 }
 
-// dryRun reports the definition a register would send (the local file, or
-// the --rev copy) and the revision number it would create, in the same
-// canonical form diff uses.
-func (c *RegisterCmd) dryRun(app *App, in *batch.RegisterJobDefinitionInput, name string) error {
+// dryRun renders the local definition and reports the revision number a
+// register would create, in the same canonical form diff uses.
+func (c *RegisterCmd) dryRun(app *App) error {
+	local, err := app.loadJobDefinition()
+	if err != nil {
+		return err
+	}
+	name := aws.ToString(local.JobDefinitionName)
+	if name == "" {
+		return fmt.Errorf("jobDefinitionName is empty in the rendered job definition")
+	}
 	all, err := app.listRevisions(name, "")
 	if err != nil {
 		return err
 	}
-	body, err := canonicalJSON(in)
+	body, err := canonicalJSON(local)
 	if err != nil {
 		return err
 	}

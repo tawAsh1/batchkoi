@@ -109,11 +109,11 @@ local repo = '123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp';
 | `render` | 定義を評価して JSON を出力 |
 | `diff` | 登録済みリビジョンとの差分（`--rev N` で固定、`--exit-code` は差分ありで exit 2） |
 | `verify` | 参照先リソースの存在確認。NG があれば非ゼロ終了（`--queue` は run と同じ） |
-| `register` | 無条件に新リビジョンを登録（`--dry-run` で内容と番号を事前表示、`--rev N` でリビジョン N のコピーを登録 — ロールフォワード） |
+| `register` | 無条件に新リビジョンを登録（`--dry-run` で内容と番号を事前表示） |
 | `deploy` | 変更時のみ登録し、古いリビジョンを整理（`--keep-count` / `--keep-revision` / `--dry-run`） |
 | `revisions` | リビジョン一覧。ステータス・イメージ・タグ・latest 表示（`--active`） |
 | `rollback` | 最新 ACTIVE リビジョンを deregister して一つ前を latest に戻す（`--dry-run`） |
-| `deregister` | 登録せずにリビジョン整理だけ行う |
+| `deregister` | 登録せずにリビジョン整理だけ行う（`--keep-count N`）。`--rev N` で特定リビジョンの単発 deregister も可 |
 | `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--array N` / `--no-wait` / `--dry-run`） |
 | `logs` | 既存ジョブのログを job id で表示（array の子は `<job-id>:<index>`）。`--follow` は終了まで追跡し、array の親 id なら `run --array` と同じリッチな子ジョブ表示になる |
 | `list` | リージョン内のジョブ定義を 1 行ずつ一覧（`--all`、設定ファイルなしでも動作） |
