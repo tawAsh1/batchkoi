@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -38,9 +39,18 @@ type App struct {
 	awsCfg aws.Config
 	batch  batchAPI
 	logs   logsAPI
-	stdout io.Writer // result output (emit); os.Stdout outside tests
+	stdout io.Writer     // result output (emit); os.Stdout outside tests
+	poll   time.Duration // job/log polling interval; 0 = the 2s default
 
 	identity *sts.GetCallerIdentityOutput // cached by callerIdentity()
+}
+
+// pollEvery is how often run/logs poll job status and new log events.
+func (app *App) pollEvery() time.Duration {
+	if app.poll > 0 {
+		return app.poll
+	}
+	return 2 * time.Second
 }
 
 // NewApp constructs the app. Config and AWS clients are loaded lazily via setup()

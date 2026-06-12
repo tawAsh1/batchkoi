@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 )
 
@@ -544,5 +546,144 @@ func TestListRevisionsPaginated(t *testing.T) {
 	}
 	if len(actives) != 4 {
 		t.Errorf("got %d ACTIVE revisions, want 4", len(actives))
+	}
+}
+
+func TestComputeDiffIgnoresFargateDefault(t *testing.T) {
+	// Registering a FARGATE definition without fargatePlatformConfiguration
+	// makes AWS add {platformVersion: LATEST}; that alone must not read as a
+	// change, or every deploy would register a new revision.
+	local := &batch.RegisterJobDefinitionInput{
+		JobDefinitionName: aws.String("app"),
+		Type:              types.JobDefinitionTypeContainer,
+		ContainerProperties: &types.ContainerProperties{
+			Image: aws.String("img:1"),
+		},
+	}
+	remote := activeDef("app", 1, "img:1")
+	remote.ContainerProperties.FargatePlatformConfiguration = &types.FargatePlatformConfiguration{
+		PlatformVersion: aws.String("LATEST"),
+	}
+	changed, _, err := computeDiff(local, &remote, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("server-filled platformVersion LATEST reported as a change")
+	}
+
+	// A pinned platform version is a real difference and must still show.
+	remote.ContainerProperties.FargatePlatformConfiguration.PlatformVersion = aws.String("1.4.0")
+	changed, _, err = computeDiff(local, &remote, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("pinned platformVersion 1.4.0 not reported as a change")
+	}
+
+	// And a local explicit value still compares normally.
+	local.ContainerProperties.FargatePlatformConfiguration = &types.FargatePlatformConfiguration{
+		PlatformVersion: aws.String("1.4.0"),
+	}
+	changed, _, err = computeDiff(local, &remote, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("identical explicit platformVersion reported as a change")
+	}
+}
+
+func TestLogsArrayFollow(t *testing.T) {
+	fb := &fakeBatch{jobs: map[string]types.JobDetail{
+		"parent": {
+			JobId:         aws.String("parent"),
+			JobName:       aws.String("app-arr"),
+			JobDefinition: aws.String(fakeArn("app", 1)),
+			Status:        types.JobStatusSucceeded,
+			ArrayProperties: &types.ArrayPropertiesDetail{
+				Size:          aws.Int32(2),
+				StatusSummary: map[string]int32{"SUCCEEDED": 2},
+			},
+		},
+		"parent:0": {
+			JobId:           aws.String("parent:0"),
+			Status:          types.JobStatusSucceeded,
+			ArrayProperties: &types.ArrayPropertiesDetail{Index: aws.Int32(0)},
+			Container:       &types.ContainerDetail{LogStreamName: aws.String("app/default/c0")},
+		},
+		"parent:1": {
+			JobId:           aws.String("parent:1"),
+			Status:          types.JobStatusSucceeded,
+			ArrayProperties: &types.ArrayPropertiesDetail{Index: aws.Int32(1)},
+			Container:       &types.ContainerDetail{LogStreamName: aws.String("app/default/c1")},
+		},
+	}}
+	fl := &fakeLogs{events: map[string][]string{
+		"app/default/c0": {"hello-from-0"},
+		"app/default/c1": {"hello-from-1"},
+	}}
+	app := testApp(t, fb, fl, jobdefImg1)
+	app.poll = time.Millisecond
+	var buf bytes.Buffer
+	app.stdout = &buf
+
+	// Parent without --follow points at the rich tail instead of failing flat.
+	if err := (&LogsCmd{JobID: "parent"}).Run(app); err == nil || !strings.Contains(err.Error(), "--follow") {
+		t.Errorf("logs parent without --follow: want error suggesting --follow, got %v", err)
+	}
+
+	if err := (&LogsCmd{JobID: "parent", Follow: true}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "0 | hello-from-0") || !strings.Contains(out, "1 | hello-from-1") {
+		t.Errorf("missing per-child prefixed logs, got:\n%s", out)
+	}
+}
+
+func TestDeregisterSpecificRevisions(t *testing.T) {
+	fb := &fakeBatch{defs: []types.JobDefinition{
+		activeDef("app", 3, "img:3"),
+		activeDef("app", 2, "img:2"),
+		activeDef("app", 1, "img:1"),
+	}}
+	app := testApp(t, fb, nil, jobdefImg1)
+	if err := (&DeregisterCmd{Revision: []int{2}}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	if len(fb.deregistered) != 1 || fb.deregistered[0] != fakeArn("app", 2) {
+		t.Errorf("deregistered = %v, want [%s]", fb.deregistered, fakeArn("app", 2))
+	}
+}
+
+func TestDeregisterSpecificRevisionErrors(t *testing.T) {
+	fb := &fakeBatch{defs: []types.JobDefinition{
+		activeDef("app", 2, "img:2"),
+		inactive(activeDef("app", 1, "img:1")),
+	}}
+	app := testApp(t, fb, nil, jobdefImg1)
+
+	// Already INACTIVE and never-existed targets fail before deregistering.
+	for _, rev := range []int{1, 99} {
+		if err := (&DeregisterCmd{Revision: []int{rev}}).Run(app); err == nil || !strings.Contains(err.Error(), "not ACTIVE") {
+			t.Errorf("rev %d: want 'not ACTIVE' error, got %v", rev, err)
+		}
+	}
+	// A mixed batch with one bad target must not deregister anything.
+	if err := (&DeregisterCmd{Revision: []int{2, 99}}).Run(app); err == nil {
+		t.Error("want error for batch containing a bad revision")
+	}
+	if len(fb.deregistered) != 0 {
+		t.Errorf("deregistered = %v, want none", fb.deregistered)
+	}
+
+	// --rev and --keep-count are mutually exclusive; one of them is required.
+	if err := (&DeregisterCmd{Revision: []int{2}, KeepCount: 1}).Run(app); err == nil {
+		t.Error("want error combining --rev with --keep-count")
+	}
+	if err := (&DeregisterCmd{}).Run(app); err == nil {
+		t.Error("want error when neither --rev nor --keep-count is given")
 	}
 }

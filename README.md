@@ -118,9 +118,9 @@ See [_example/](_example/) for a runnable example (no AWS account needed to rend
 | `deploy` | register only if changed, then prune (`--keep-count N`, `--keep-revision N`, `--dry-run`) |
 | `revisions` | list revisions: status, image, tags, latest marker (`--active`) |
 | `rollback` | deregister the latest ACTIVE revision so the previous one is latest again (`--dry-run`) |
-| `deregister` | prune old revisions without registering |
+| `deregister` | prune old revisions without registering (`--keep-count N`), or deregister exact revisions (`--rev N`, repeatable) |
 | `run` | submit a job and tail logs; registers first only if changed (`--rev`, `--command`, `--env`, `--array N`, `--no-wait`, `--dry-run`) |
-| `logs` | print the CloudWatch logs of an existing job by id (`<job-id>` or `<job-id>:<index>` for an array child; `--follow`) |
+| `logs` | print the CloudWatch logs of an existing job by id (`<job-id>` or `<job-id>:<index>` for an array child); `--follow` tails to completion, and on an array parent gives the same rich per-child view as `run --array` |
 | `list` | one row per job definition in the region: revisions, latest, image (`--all`; works without a config file) |
 
 Notes:
@@ -139,6 +139,9 @@ Notes:
   least 2 ACTIVE revisions — prefer `--keep-count 2` or more (batchkoi warns on `--keep-count 1`).
 - `--command`/`--env` use SubmitJob's containerOverrides, which only apply to ECS/Fargate
   container jobs — EKS and multi-node definitions won't pick them up (batchkoi warns).
+- Write command arguments that start with a dash in `--command=` form, e.g.
+  `batchkoi run --command=python --command=-u --command=main.py` — a space-separated
+  `--command -u` would be parsed as the flag `-u`.
 - Don't use the deprecated `containerProperties.vcpus`/`memory` fields: AWS rewrites them into
   `resourceRequirements` server-side, so diff would report changes forever and every deploy would
   register a new revision (batchkoi warns when it sees them).

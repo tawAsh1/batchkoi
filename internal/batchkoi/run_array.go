@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
@@ -126,14 +125,14 @@ func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, l
 			// Same grace drain as the single-job tail: awslogs delivers
 			// with a few seconds of lag.
 			for i := 0; tailLogs && i < 3; i++ {
-				if app.sleep(2*time.Second) != nil {
+				if app.sleep(app.pollEvery()) != nil {
 					break
 				}
 				tailPage()
 			}
 			return parent, nil
 		}
-		if app.sleep(2*time.Second) != nil {
+		if app.sleep(app.pollEvery()) != nil {
 			return nil, fmt.Errorf("interrupted — job %s is still running", parentID)
 		}
 	}

@@ -113,9 +113,9 @@ local repo = '123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/myapp';
 | `deploy` | 変更時のみ登録し、古いリビジョンを整理（`--keep-count` / `--keep-revision` / `--dry-run`） |
 | `revisions` | リビジョン一覧。ステータス・イメージ・タグ・latest 表示（`--active`） |
 | `rollback` | 最新 ACTIVE リビジョンを deregister して一つ前を latest に戻す（`--dry-run`） |
-| `deregister` | 登録せずにリビジョン整理だけ行う |
+| `deregister` | 登録せずにリビジョン整理だけ行う（`--keep-count N`）。`--rev N` で特定リビジョンの単発 deregister も可 |
 | `run` | ジョブ投入とログ tail。変更時のみ事前登録（`--rev` / `--command` / `--env` / `--array N` / `--no-wait` / `--dry-run`） |
-| `logs` | 既存ジョブのログを job id で表示（array の子は `<job-id>:<index>`、`--follow` で追跡） |
+| `logs` | 既存ジョブのログを job id で表示（array の子は `<job-id>:<index>`）。`--follow` は終了まで追跡し、array の親 id なら `run --array` と同じリッチな子ジョブ表示になる |
 | `list` | リージョン内のジョブ定義を 1 行ずつ一覧（`--all`、設定ファイルなしでも動作） |
 
 `--keep-count` を渡さない限り deregister は一切起きません（`--keep-revision` は
@@ -133,6 +133,9 @@ docker-compose 風の色付き prefix で interleave 表示、進捗バーで完
   `--keep-count` は 2 以上を推奨します（`--keep-count 1` には警告が出ます）
 - `--command` / `--env` は SubmitJob の containerOverrides を使うため、ECS/Fargate の
   コンテナジョブにしか効きません。EKS・マルチノード定義では無視されます（警告が出ます）
+- ハイフンで始まる引数は `--command=` 形式で書いてください。例:
+  `batchkoi run --command=python --command=-u --command=main.py`
+  （スペース区切りの `--command -u` は `-u` がフラグとして解釈されます）
 - 非推奨の `containerProperties.vcpus` / `memory` は使わないでください。AWS がサーバー側で
   `resourceRequirements` に書き換えるため diff が永遠に差分ありになり、deploy のたびに
   新リビジョンが登録されてしまいます（検出時に警告が出ます）
