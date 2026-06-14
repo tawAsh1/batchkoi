@@ -306,7 +306,7 @@ func TestLogsCmd(t *testing.T) {
 	if err := (&LogsCmd{JobID: "j1"}).Run(app); err != nil {
 		t.Errorf("logs j1: %v", err)
 	}
-	if fl.calls == 0 {
+	if fl.calls.Load() == 0 {
 		t.Error("logs j1 never called GetLogEvents")
 	}
 	if err := (&LogsCmd{JobID: "parent"}).Run(app); err == nil || !strings.Contains(err.Error(), "array parent") {

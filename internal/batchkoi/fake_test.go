@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -134,11 +135,11 @@ func (f *fakeBatch) DescribeJobQueues(_ context.Context, in *batch.DescribeJobQu
 type fakeLogs struct {
 	events map[string][]string // stream -> messages
 	groups []string
-	calls  int
+	calls  atomic.Int64 // resolog tails children concurrently, so keep it race-free
 }
 
 func (f *fakeLogs) GetLogEvents(_ context.Context, in *cloudwatchlogs.GetLogEventsInput, _ ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.GetLogEventsOutput, error) {
-	f.calls++
+	f.calls.Add(1)
 	stream := aws.ToString(in.LogStreamName)
 	msgs, ok := f.events[stream]
 	if !ok {
@@ -160,7 +161,7 @@ func (f *fakeLogs) GetLogEvents(_ context.Context, in *cloudwatchlogs.GetLogEven
 // loop converges (otherwise it would re-emit every poll). Events get stable
 // 1-based timestamps per stream and an EventId for boundary de-duplication.
 func (f *fakeLogs) FilterLogEvents(_ context.Context, in *cloudwatchlogs.FilterLogEventsInput, _ ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
-	f.calls++
+	f.calls.Add(1)
 	start := aws.ToInt64(in.StartTime)
 	want := map[string]bool{}
 	for _, s := range in.LogStreamNames {
