@@ -2,111 +2,110 @@ package batchkoi
 
 import (
 	"bytes"
-	"errors"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
-	cwltypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"golang.org/x/term"
+
+	"github.com/tawAsh1/resolog"
+	rlpoll "github.com/tawAsh1/resolog/backend/poll"
 )
 
 // maxTailedChildren caps how many child log streams are tailed at once.
-// GetLogEvents has a 25 TPS default account quota; 32 children polled every
-// 2s stay safely under it. Larger arrays are tailed one page of 32 at a time
-// (arrow keys switch pages), or show the progress bar only off-terminal.
+// FilterLogEvents has a per-account TPS quota; one window of 32 children polled
+// every couple of seconds stays safely under it. Larger arrays are tailed one
+// page of 32 at a time (arrow keys switch pages), or show the progress bar only
+// off-terminal.
 const maxTailedChildren = 32
 
-// childTail is the tail state of one array child: its job id
-// ("<parent>:<index>"), display prefix, log stream, and forward token.
+// childTail is the discovery state of one array child: its job id
+// ("<parent>:<index>") and, once known, its log stream.
 type childTail struct {
 	id     string
-	prefix string
 	stream string
-	token  *string
 }
 
-// waitAndTailArray polls an array job's parent until it reaches a terminal
-// state, interleaving child log streams behind a colored per-child prefix
-// (docker-compose style) and printing a progress bar as children finish.
-// Arrays larger than maxTailedChildren are tailed one page at a time.
+// waitAndTailArray tails an array job's children behind colored per-child
+// prefixes (docker-compose style) with a progress bar, all through resolog.
+// Arrays within the tail cap stream every child at once; larger arrays page
+// through one window at a time.
 func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, logW, progressW io.Writer) (*types.JobDetail, error) {
-	// Arrays within the tail cap go through resolog; only the larger arrays,
-	// which need the home-grown TPS-bounded pager, stay on the path below.
 	if size <= maxTailedChildren {
 		return app.tailArrayViaResolog(parentID, size, logW, progressW)
 	}
+	return app.tailArrayPaged(parentID, size, logGroup, logW, progressW)
+}
 
-	width := len(fmt.Sprintf("%d", size-1))
+// tailArrayPaged tails an array larger than maxTailedChildren: a pager shows one
+// window of children at a time (arrow keys switch pages), each window tailed via
+// resolog. Switching pages cancels the current window's tail and starts the
+// next. Keeping the window bounded means the per-child fan-in stays under the
+// FilterLogEvents TPS quota without batching. Off-terminal (piped/CI) it falls
+// back to the progress bar only, since there is no way to page.
+func (app *App) tailArrayPaged(parentID string, size int32, logGroup string, logW, progressW io.Writer) (*types.JobDetail, error) {
 	color := colorEnabled(logW)
-	children := make([]*childTail, size)
-	for i := range children {
-		children[i] = &childTail{
-			id:     fmt.Sprintf("%s:%d", parentID, i),
-			prefix: childPrefix(i, width, color),
-		}
-	}
+	width := len(fmt.Sprintf("%d", size-1))
 
-	tailLogs := true
-	var pager *childPager
-	if size > maxTailedChildren {
-		if pager = startChildPager(size, maxTailedChildren, logW); pager != nil {
-			defer pager.restore()
-			// Raw mode disables output post-processing, so rewrite \n.
-			logW = crlfWriter{logW}
-			progressW = crlfWriter{progressW}
-			fmt.Fprintf(progressW, "array of %d children — tailing %d at a time, ←/→ (or p/n) to switch pages\n",
-				size, maxTailedChildren)
-		} else {
-			tailLogs = false
-			fmt.Fprintf(progressW, "array of %d children — log tailing is capped at %d, showing progress only\n",
-				size, maxTailedChildren)
+	pager := startChildPager(size, maxTailedChildren, logW)
+	if pager == nil {
+		fmt.Fprintf(progressW, "array of %d children — log tailing needs a terminal for paging, showing progress only\n", size)
+		return app.waitForArrayTerminal(parentID, size, color, progressW)
+	}
+	defer pager.restore()
+	// Raw mode disables output post-processing, so rewrite \n → \r\n.
+	logW = crlfWriter{logW}
+	progressW = crlfWriter{progressW}
+	fmt.Fprintf(progressW, "array of %d children — tailing %d at a time, ←/→ (or p/n) to switch pages\n",
+		size, maxTailedChildren)
+
+	var winCancel context.CancelFunc
+	var winDone chan struct{}
+	stopWindow := func() {
+		if winCancel != nil {
+			winCancel()
+			<-winDone
+			winCancel, winDone = nil, nil
 		}
 	}
+	startWindow := func(page int32) {
+		offset := int(page) * maxTailedChildren
+		end := min(offset+maxTailedChildren, int(size))
+		fmt.Fprintln(progressW, pageBanner(offset, end, int(page), int(pager.pages), color))
+		wctx, cancel := context.WithCancel(app.ctx)
+		done := make(chan struct{})
+		winCancel, winDone = cancel, done
+		go func() {
+			defer close(done)
+			res := app.windowSources(wctx, parentID, logGroup, offset, end)
+			backend := rlpoll.New(app.logs, rlpoll.Options{Follow: true, Interval: app.pollEvery()})
+			sink := &childSink{out: logW, width: width, color: color}
+			_ = resolog.Tail(wctx, res, backend, sink,
+				resolog.WithErrorHandler(func(s resolog.Source, e error) {
+					fmt.Fprintf(progressW, "warning: cannot read logs from %s: %v\n", s.LogGroup, e)
+				}))
+		}()
+	}
+	defer stopWindow()
+
+	cur := pager.page.Load()
+	startWindow(cur)
 
 	var lastStatus types.JobStatus
 	lastProgress := ""
-	lastPage := int32(-1)
-	warned := false
-	tailPage := func() {
-		page, offset := children, 0
-		if pager != nil {
-			cur := pager.page.Load()
-			offset = int(cur) * maxTailedChildren
-			end := min(offset+maxTailedChildren, len(children))
-			page = children[offset:end]
-			if cur != lastPage {
-				fmt.Fprintln(progressW, pageBanner(offset, end, int(cur), int(pager.pages), color))
-				lastPage = cur
-			}
-		}
-		app.refreshChildStreams(page, offset)
-		for _, ch := range page {
-			if ch.stream == "" {
-				continue
-			}
-			tok, err := app.tailOnce(logGroup, ch.stream, ch.token, logW, ch.prefix)
-			if err == nil {
-				ch.token = tok
-				continue
-			}
-			// Same semantics as the single-job tail: a missing stream is
-			// normal until the container logs its first event; anything
-			// else is warned once instead of failing silently.
-			var nf *cwltypes.ResourceNotFoundException
-			if !errors.As(err, &nf) && !warned {
-				fmt.Fprintf(progressW, "warning: cannot read logs from %s/%s: %v\n", logGroup, ch.stream, err)
-				warned = true
-			}
-		}
-	}
-
 	for {
+		if p := pager.page.Load(); p != cur {
+			stopWindow()
+			cur = p
+			startWindow(cur)
+		}
 		parent, err := app.describeJob(parentID)
 		if err != nil {
 			if app.ctx.Err() != nil {
@@ -124,24 +123,65 @@ func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, l
 				lastProgress = line
 			}
 		}
-		if tailLogs {
-			tailPage()
-		}
 		if parent.Status == types.JobStatusSucceeded || parent.Status == types.JobStatusFailed {
-			// Same grace drain as the single-job tail: awslogs delivers
-			// with a few seconds of lag.
-			for i := 0; tailLogs && i < 3; i++ {
-				if app.sleep(app.pollEvery()) != nil {
-					break
-				}
-				tailPage()
-			}
+			// Let the current window catch awslogs' lagged final lines before
+			// the deferred stopWindow cancels it.
+			app.sleep(app.pollEvery() * 3)
 			return parent, nil
 		}
 		if app.sleep(app.pollEvery()) != nil {
 			return nil, fmt.Errorf("interrupted — job %s is still running", parentID)
 		}
 	}
+}
+
+// windowSources is a resolog.Resolution that emits one Source per child in the
+// window [offset,end) as each child's log stream appears (labelled "batch[N]"
+// so childSink can colour it by index). Done is nil; the caller stops it by
+// cancelling ctx — on a page switch or after the terminal grace.
+func (app *App) windowSources(ctx context.Context, parentID, logGroup string, offset, end int) resolog.Resolution {
+	sources := make(chan resolog.Source)
+	go func() {
+		defer close(sources)
+		children := make([]*childTail, end-offset)
+		for i := range children {
+			children[i] = &childTail{id: fmt.Sprintf("%s:%d", parentID, offset+i)}
+		}
+		emitted := make([]bool, len(children))
+		for {
+			app.refreshChildStreams(children, offset)
+			remaining := 0
+			for i, ch := range children {
+				if ch.stream == "" {
+					remaining++
+					continue
+				}
+				if emitted[i] {
+					continue
+				}
+				emitted[i] = true
+				select {
+				case sources <- resolog.Source{
+					Key:       "batch:" + ch.stream,
+					Label:     fmt.Sprintf("batch[%d]", offset+i),
+					LogGroup:  logGroup,
+					LogStream: ch.stream,
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if remaining == 0 {
+				return // every child discovered; discovery complete
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(app.pollEvery()):
+			}
+		}
+	}()
+	return resolog.Resolution{Sources: sources, Done: nil}
 }
 
 // childPager flips which window of children is being tailed, driven by arrow
