@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -110,6 +111,12 @@ func (f *fakeBatch) DescribeJobs(_ context.Context, in *batch.DescribeJobsInput,
 	return out, nil
 }
 
+// ListJobs is only needed to satisfy resolog's batch.API (it implements a
+// Lister); batchkoi's tailing never calls it, so a stub is fine.
+func (f *fakeBatch) ListJobs(_ context.Context, _ *batch.ListJobsInput, _ ...func(*batch.Options)) (*batch.ListJobsOutput, error) {
+	return &batch.ListJobsOutput{}, nil
+}
+
 func (f *fakeBatch) DescribeJobQueues(_ context.Context, in *batch.DescribeJobQueuesInput, _ ...func(*batch.Options)) (*batch.DescribeJobQueuesOutput, error) {
 	out := &batch.DescribeJobQueuesOutput{}
 	for _, q := range f.queues {
@@ -144,6 +151,43 @@ func (f *fakeLogs) GetLogEvents(_ context.Context, in *cloudwatchlogs.GetLogEven
 	out := &cloudwatchlogs.GetLogEventsOutput{NextForwardToken: done}
 	for _, m := range msgs {
 		out.Events = append(out.Events, cwltypes.OutputLogEvent{Message: aws.String(m)})
+	}
+	return out, nil
+}
+
+// FilterLogEvents backs resolog's poll backend. It serves the same canned
+// per-stream events as GetLogEvents, honoring StartTime so resolog's follow
+// loop converges (otherwise it would re-emit every poll). Events get stable
+// 1-based timestamps per stream and an EventId for boundary de-duplication.
+func (f *fakeLogs) FilterLogEvents(_ context.Context, in *cloudwatchlogs.FilterLogEventsInput, _ ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
+	f.calls++
+	start := aws.ToInt64(in.StartTime)
+	want := map[string]bool{}
+	for _, s := range in.LogStreamNames {
+		want[s] = true
+	}
+	streams := make([]string, 0, len(f.events))
+	for s := range f.events {
+		streams = append(streams, s)
+	}
+	sort.Strings(streams)
+	out := &cloudwatchlogs.FilterLogEventsOutput{}
+	for _, s := range streams {
+		if len(want) > 0 && !want[s] {
+			continue
+		}
+		for i, m := range f.events[s] {
+			ts := int64(i + 1)
+			if ts < start {
+				continue
+			}
+			out.Events = append(out.Events, cwltypes.FilteredLogEvent{
+				EventId:       aws.String(fmt.Sprintf("%s:%d", s, i)),
+				Message:       aws.String(m),
+				Timestamp:     aws.Int64(ts),
+				LogStreamName: aws.String(s),
+			})
+		}
 	}
 	return out, nil
 }
