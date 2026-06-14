@@ -36,6 +36,12 @@ type childTail struct {
 // (docker-compose style) and printing a progress bar as children finish.
 // Arrays larger than maxTailedChildren are tailed one page at a time.
 func (app *App) waitAndTailArray(parentID string, size int32, logGroup string, logW, progressW io.Writer) (*types.JobDetail, error) {
+	// Arrays within the tail cap go through resolog; only the larger arrays,
+	// which need the home-grown TPS-bounded pager, stay on the path below.
+	if size <= maxTailedChildren {
+		return app.tailArrayViaResolog(parentID, size, logW, progressW)
+	}
+
 	width := len(fmt.Sprintf("%d", size-1))
 	color := colorEnabled(logW)
 	children := make([]*childTail, size)

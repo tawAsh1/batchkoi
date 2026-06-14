@@ -380,6 +380,72 @@ func (app *App) waitForTerminal(jobID string, progressW io.Writer) (*types.JobDe
 	}
 }
 
+// tailArrayViaResolog tails an array job's children (size <= maxTailedChildren)
+// through resolog: the batch resolver expands the array into one Source per
+// child ("batch[N]") and the childSink renders each behind its colored prefix.
+// As with the single-job tail, batchkoi keeps a parallel status poll for the
+// [STATUS] lines, the progress bar, the final JobDetail and exit-on-FAILED.
+func (app *App) tailArrayViaResolog(parentID string, size int32, logW, progressW io.Writer) (*types.JobDetail, error) {
+	res, err := rlbatch.New(app.batch, rlbatch.WithPollInterval(app.pollEvery())).Resolve(app.ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	backend := rlpoll.New(app.logs, rlpoll.Options{Follow: true, Interval: app.pollEvery()})
+	color := colorEnabled(logW)
+	sink := &childSink{
+		out:   logW,
+		width: len(fmt.Sprintf("%d", size-1)),
+		color: color,
+	}
+
+	tailDone := make(chan struct{})
+	go func() {
+		defer close(tailDone)
+		_ = resolog.Tail(app.ctx, res, backend, sink,
+			resolog.WithGracePeriod(app.pollEvery()*3),
+			resolog.WithErrorHandler(func(s resolog.Source, e error) {
+				fmt.Fprintf(progressW, "warning: cannot read logs from %s: %v\n", s.LogGroup, e)
+			}))
+	}()
+
+	final, err := app.waitForArrayTerminal(parentID, size, color, progressW)
+	<-tailDone
+	return final, err
+}
+
+// waitForArrayTerminal polls the array parent until terminal, printing [STATUS]
+// transitions and the progress bar (the rich UX resolog deliberately leaves to
+// the consumer). It does not read logs.
+func (app *App) waitForArrayTerminal(parentID string, size int32, color bool, progressW io.Writer) (*types.JobDetail, error) {
+	var lastStatus types.JobStatus
+	lastProgress := ""
+	for {
+		parent, err := app.describeJob(parentID)
+		if err != nil {
+			if app.ctx.Err() != nil {
+				return nil, fmt.Errorf("interrupted — job %s may still be running", parentID)
+			}
+			return nil, err
+		}
+		if parent.Status != lastStatus {
+			fmt.Fprintf(progressW, "[%s]\n", parent.Status)
+			lastStatus = parent.Status
+		}
+		if parent.ArrayProperties != nil {
+			if line := arrayProgress(size, parent.ArrayProperties.StatusSummary, color); line != lastProgress {
+				fmt.Fprintln(progressW, line)
+				lastProgress = line
+			}
+		}
+		if parent.Status == types.JobStatusSucceeded || parent.Status == types.JobStatusFailed {
+			return parent, nil
+		}
+		if app.sleep(app.pollEvery()) != nil {
+			return nil, fmt.Errorf("interrupted — job %s is still running", parentID)
+		}
+	}
+}
+
 // sleep waits for d or until the app context is cancelled (returning its error).
 func (app *App) sleep(d time.Duration) error {
 	t := time.NewTimer(d)
