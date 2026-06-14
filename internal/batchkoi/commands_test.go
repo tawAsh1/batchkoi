@@ -643,6 +643,62 @@ func TestLogsArrayFollow(t *testing.T) {
 	}
 }
 
+// Single-job --follow now tails via resolog; a single job has no per-child
+// prefix, and lines come out in order.
+func TestLogsSingleFollow(t *testing.T) {
+	fb := &fakeBatch{jobs: map[string]types.JobDetail{
+		"j1": {
+			JobId:   aws.String("j1"),
+			JobName: aws.String("app-1"),
+			Status:  types.JobStatusSucceeded,
+			Container: &types.ContainerDetail{
+				LogStreamName: aws.String("app/default/abc"),
+				ExitCode:      aws.Int32(0),
+			},
+		},
+	}}
+	fl := &fakeLogs{events: map[string][]string{"app/default/abc": {"hello", "world"}}}
+	app := testApp(t, fb, fl, jobdefImg1)
+	app.poll = time.Millisecond
+	var buf bytes.Buffer
+	app.stdout = &buf
+
+	if err := (&LogsCmd{JobID: "j1", Follow: true}).Run(app); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "hello\nworld\n" {
+		t.Errorf("single-job follow output = %q, want %q", got, "hello\nworld\n")
+	}
+}
+
+// A FAILED single job still flushes its logs, then exits non-zero.
+func TestLogsSingleFollowFailExits(t *testing.T) {
+	fb := &fakeBatch{jobs: map[string]types.JobDetail{
+		"j1": {
+			JobId:   aws.String("j1"),
+			JobName: aws.String("app-1"),
+			Status:  types.JobStatusFailed,
+			Container: &types.ContainerDetail{
+				LogStreamName: aws.String("app/default/abc"),
+				ExitCode:      aws.Int32(1),
+			},
+		},
+	}}
+	fl := &fakeLogs{events: map[string][]string{"app/default/abc": {"boom"}}}
+	app := testApp(t, fb, fl, jobdefImg1)
+	app.poll = time.Millisecond
+	var buf bytes.Buffer
+	app.stdout = &buf
+
+	err := (&LogsCmd{JobID: "j1", Follow: true}).Run(app)
+	if err == nil || !strings.Contains(err.Error(), "FAILED") {
+		t.Errorf("want a FAILED error, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "boom") {
+		t.Errorf("logs must be flushed before failing, got:\n%s", buf.String())
+	}
+}
+
 func TestDeregisterSpecificRevisions(t *testing.T) {
 	fb := &fakeBatch{defs: []types.JobDefinition{
 		activeDef("app", 3, "img:3"),

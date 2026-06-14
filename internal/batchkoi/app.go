@@ -23,12 +23,17 @@ type batchAPI interface {
 	SubmitJob(context.Context, *batch.SubmitJobInput, ...func(*batch.Options)) (*batch.SubmitJobOutput, error)
 	DescribeJobs(context.Context, *batch.DescribeJobsInput, ...func(*batch.Options)) (*batch.DescribeJobsOutput, error)
 	DescribeJobQueues(context.Context, *batch.DescribeJobQueuesInput, ...func(*batch.Options)) (*batch.DescribeJobQueuesOutput, error)
+	// ListJobs is required by resolog's batch resolver (it implements a Lister).
+	// batchkoi's tailing doesn't call it directly.
+	ListJobs(context.Context, *batch.ListJobsInput, ...func(*batch.Options)) (*batch.ListJobsOutput, error)
 }
 
 // logsAPI is the slice of the CloudWatch Logs client that batchkoi uses.
 type logsAPI interface {
 	GetLogEvents(context.Context, *cloudwatchlogs.GetLogEventsInput, ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.GetLogEventsOutput, error)
 	DescribeLogGroups(context.Context, *cloudwatchlogs.DescribeLogGroupsInput, ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.DescribeLogGroupsOutput, error)
+	// FilterLogEvents backs resolog's poll backend (used by the follow tail).
+	FilterLogEvents(context.Context, *cloudwatchlogs.FilterLogEventsInput, ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error)
 }
 
 // App carries shared state across all commands.

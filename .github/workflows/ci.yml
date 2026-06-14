@@ -50,6 +50,16 @@ jobs:
           GOOS=windows GOARCH=amd64 go build ./...
           GOOS=darwin GOARCH=arm64 go build ./...
 
+      # batchkoi uses resolog for log tailing (core + resolver/batch +
+      # backend/poll) but must NOT reach resolog's SFn/Lambda resolvers, which
+      # would drag those service SDKs into go.mod. Fail loud if they ever leak.
+      - name: dependency hygiene (no sfn/lambda SDK)
+        run: |
+          if go list -deps ./... | grep -E 'aws-sdk-go-v2/service/(sfn|lambda)'; then
+            echo "::error::resolog SFn/Lambda SDK leaked into the build"
+            exit 1
+          fi
+
   # E2E for the bundled setup action (action.yml): installs the latest
   # release and runs the binary.
   action-smoke:

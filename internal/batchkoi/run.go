@@ -1,7 +1,6 @@
 package batchkoi
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/batch"
 	"github.com/aws/aws-sdk-go-v2/service/batch/types"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
-	cwltypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+
+	"github.com/tawAsh1/resolog"
+	rlpoll "github.com/tawAsh1/resolog/backend/poll"
+	rlbatch "github.com/tawAsh1/resolog/resolver/batch"
 )
 
 const defaultLogGroup = "/aws/batch/job"
@@ -140,7 +142,7 @@ func (c *RunCmd) Run(app *App) error {
 	if c.Array > 0 {
 		final, err = app.waitAndTailArray(res.JobID, c.Array, resolveLogGroup(local), logW, progressW)
 	} else {
-		final, err = app.waitAndTail(res.JobID, resolveLogGroup(local), logW, progressW)
+		final, err = app.waitAndTail(res.JobID, logW, progressW)
 	}
 	if err != nil {
 		return err
@@ -324,30 +326,39 @@ func resolveLogGroup(in *batch.RegisterJobDefinitionInput) string {
 	return defaultLogGroup
 }
 
-// waitAndTail polls the job until it reaches a terminal state, streaming new
-// CloudWatch Logs events as they appear. Only the single container log stream
-// is tailed; array and multi-node jobs run fine but their logs are not shown.
-func (app *App) waitAndTail(jobID, logGroup string, logW, progressW io.Writer) (*types.JobDetail, error) {
-	var lastStatus types.JobStatus
-	var streamName string
-	var token *string
-	warned := false
-	tail := func() {
-		tok, err := app.tailOnce(logGroup, streamName, token, logW, "")
-		if err == nil {
-			token = tok
-			return
-		}
-		// The stream is created only when the container writes its first
-		// event, so not-found is normal early on. Anything else (wrong log
-		// group, missing permissions) would otherwise fail silently — warn
-		// once and keep waiting for the job itself.
-		var nf *cwltypes.ResourceNotFoundException
-		if !errors.As(err, &nf) && !warned {
-			fmt.Fprintf(progressW, "warning: cannot read logs from %s/%s: %v\n", logGroup, streamName, err)
-			warned = true
-		}
+// waitAndTail tails a single job's container log via resolog while batchkoi
+// keeps polling the job's status for the [STATUS] lines, the final JobDetail
+// and the exit-on-FAILED decision. resolog owns tail shutdown (its resolver's
+// Done signal + a grace window to catch awslogs' ingestion lag); batchkoi never
+// cancels the tail itself — only a Ctrl-C (shared context) does.
+func (app *App) waitAndTail(jobID string, logW, progressW io.Writer) (*types.JobDetail, error) {
+	res, err := rlbatch.New(app.batch, rlbatch.WithPollInterval(app.pollEvery())).Resolve(app.ctx, jobID)
+	if err != nil {
+		return nil, err
 	}
+	backend := rlpoll.New(app.logs, rlpoll.Options{Follow: true, Interval: app.pollEvery()})
+	sink := &childSink{out: logW} // single job: label "batch/<name>" → no prefix
+
+	tailDone := make(chan struct{})
+	go func() {
+		defer close(tailDone)
+		_ = resolog.Tail(app.ctx, res, backend, sink,
+			resolog.WithGracePeriod(app.pollEvery()*3),
+			resolog.WithErrorHandler(func(s resolog.Source, e error) {
+				fmt.Fprintf(progressW, "warning: cannot read logs from %s: %v\n", s.LogGroup, e)
+			}))
+	}()
+
+	final, err := app.waitForTerminal(jobID, progressW)
+	<-tailDone // let resolog finish its grace drain before returning
+	return final, err
+}
+
+// waitForTerminal polls the job until it reaches a terminal state, printing a
+// [STATUS] line on each transition and returning the final JobDetail. It does
+// not read logs — that is resolog's job.
+func (app *App) waitForTerminal(jobID string, progressW io.Writer) (*types.JobDetail, error) {
+	var lastStatus types.JobStatus
 	for {
 		job, err := app.describeJob(jobID)
 		if err != nil {
@@ -360,22 +371,7 @@ func (app *App) waitAndTail(jobID, logGroup string, logW, progressW io.Writer) (
 			fmt.Fprintf(progressW, "[%s]\n", job.Status)
 			lastStatus = job.Status
 		}
-		if streamName == "" && job.Container != nil {
-			streamName = aws.ToString(job.Container.LogStreamName)
-		}
-		if streamName != "" {
-			tail()
-		}
 		if job.Status == types.JobStatusSucceeded || job.Status == types.JobStatusFailed {
-			// awslogs delivers to CloudWatch with a few seconds of lag, so
-			// keep draining briefly after the job terminates to avoid
-			// truncating the tail of the output.
-			for i := 0; streamName != "" && i < 3; i++ {
-				if app.sleep(app.pollEvery()) != nil {
-					break
-				}
-				tail()
-			}
 			return job, nil
 		}
 		if app.sleep(app.pollEvery()) != nil {

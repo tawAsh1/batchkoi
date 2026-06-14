@@ -49,7 +49,7 @@ func (c *LogsCmd) Run(app *App) error {
 			return err
 		}
 	case c.Follow:
-		final, err = app.waitAndTail(c.JobID, group, logW, progressW)
+		final, err = app.waitAndTail(c.JobID, logW, progressW)
 		if err != nil {
 			return err
 		}
