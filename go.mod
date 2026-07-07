@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/kong v1.15.0
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
-	github.com/aws/aws-sdk-go-v2/service/batch v1.65.6
+	github.com/aws/aws-sdk-go-v2/service/batch v1.66.1
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.75.2
 	github.com/aws/aws-sdk-go-v2/service/ecr v1.58.4
 	github.com/aws/aws-sdk-go-v2/service/iam v1.54.4
