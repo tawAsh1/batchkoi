@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/alecthomas/kong v1.15.0
-	github.com/aws/aws-sdk-go-v2 v1.43.5
+	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.36
 	github.com/aws/aws-sdk-go-v2/service/batch v1.68.5
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.82.1
@@ -61,7 +61,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.5 // indirect
-	github.com/aws/smithy-go v1.27.7 // indirect
+	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/dimchansky/utfbom v1.1.1 // indirect
